@@ -418,12 +418,12 @@ class ResidentMavenExecutor(
             val mavenHome = cachedMavenHome
 
             // Create ParserRequest from our arguments
-            // NOTE: We do NOT set stdOut/stdErr here because ResidentMavenInvoker may hang
-            // waiting for input if streams are not properly set up. Instead, we redirect
-            // System.out/System.err temporarily and let Maven write to those.
+            // Following the official Maven test pattern (MavenInvokerTestSupport.java)
             val parserRequestBuilder = ParserRequest.mvn(allArguments.toList(), messageBuilderFactory)
                 .cwd(workingDir.toPath())
                 .userHome(File(System.getProperty("user.home")).toPath())
+                .stdOut(outputStream)
+                .stdErr(outputStream)
                 .embedded(true) // Running embedded, not as CLI
 
             // Set Maven home if available
