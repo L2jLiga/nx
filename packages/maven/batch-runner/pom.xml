@@ -196,6 +196,10 @@
                                 <transformer implementation="org.apache.maven.plugins.shade.resource.AppendingTransformer">
                                     <resource>META-INF/sisu/javax.inject.Named</resource>
                                 </transformer>
+                                <!-- Merge plexus components.xml files to combine component declarations -->
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.XmlAppendingTransformer">
+                                    <resource>META-INF/plexus/components.xml</resource>
+                                </transformer>
                             </transformers>
                             <filters>
                                 <filter>
