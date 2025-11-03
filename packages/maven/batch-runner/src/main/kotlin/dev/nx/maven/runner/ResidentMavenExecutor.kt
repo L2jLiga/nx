@@ -46,12 +46,14 @@ class ResidentMavenExecutor(
     }
 
     /**
-     * Find Maven home directory from environment, system properties, or system PATH.
+     * Find Maven home directory from environment, system properties, Maven wrapper, or system PATH.
      * Checks in order:
      * 1. MAVEN_HOME environment variable
      * 2. maven.home system property
-     * 3. Use `which mvn` to find Maven installation
-     * 4. Returns null if not found
+     * 3. Maven wrapper in ~/.m2/wrapper/ (prioritized over system Maven)
+     * 4. Use `which mvn` to find Maven installation
+     * 5. Common Maven installation paths
+     * 6. Returns null if not found
      */
     private fun findMavenHome(): File? {
         // Check MAVEN_HOME environment variable
@@ -71,6 +73,29 @@ class ResidentMavenExecutor(
             if (dir.isDirectory) {
                 log.debug("Found Maven home from maven.home property: $mavenHomeProp")
                 return dir
+            }
+        }
+
+        // Check Maven wrapper (prioritized over system Maven)
+        val userHome = System.getProperty("user.home")
+        val wrapperBaseDir = File(userHome, ".m2/wrapper/dists")
+        if (wrapperBaseDir.isDirectory) {
+            // Look for Maven 4.x wrapper installations (usually named apache-maven-4.x.x)
+            val maven4Dirs = wrapperBaseDir.listFiles { file ->
+                file.isDirectory && file.name.startsWith("apache-maven-4")
+            }?.sortedByDescending { it.name }  // Get highest version first
+
+            if (maven4Dirs != null && maven4Dirs.isNotEmpty()) {
+                // Each version dir has subdirs with hash names, get the first one
+                val versionDir = maven4Dirs[0]
+                val hashDirs = versionDir.listFiles { file -> file.isDirectory }
+                if (hashDirs != null && hashDirs.isNotEmpty()) {
+                    val mavenHome = hashDirs[0]
+                    if (File(mavenHome, "lib").isDirectory && File(mavenHome, "bin").isDirectory) {
+                        log.info("Found Maven 4.x from wrapper: ${mavenHome.absolutePath}")
+                        return mavenHome
+                    }
+                }
             }
         }
 
@@ -108,7 +133,7 @@ class ResidentMavenExecutor(
             "/usr/local/opt/maven",  // Homebrew on macOS
             "/usr/local/maven",      // Linux
             "/opt/maven",            // Common Linux path
-            System.getProperty("user.home") + "/.m2/maven"  // User-local
+            "$userHome/.m2/maven"    // User-local
         )
 
         for (path in commonPaths) {
@@ -119,7 +144,7 @@ class ResidentMavenExecutor(
             }
         }
 
-        log.warn("Could not determine Maven home directory. Set MAVEN_HOME environment variable, maven.home system property, or ensure 'mvn' is in PATH")
+        log.warn("Could not determine Maven home directory. Set MAVEN_HOME environment variable, maven.home system property, ensure 'mvn' is in PATH, or install Maven wrapper in ~/.m2/wrapper/")
         return null
     }
 
@@ -131,6 +156,55 @@ class ResidentMavenExecutor(
             this.canonicalPath != this.absolutePath
         } catch (e: Exception) {
             false
+        }
+    }
+
+    /**
+     * Detect Maven version from Maven home.
+     * Returns the version string (e.g., "3.9.11", "4.0.0") or null if detection fails.
+     */
+    private fun detectMavenVersion(mavenHome: File?): String? {
+        if (mavenHome == null) return null
+
+        return try {
+            // Read version from pom.xml in lib/ directory
+            val libDir = File(mavenHome, "lib")
+            if (!libDir.isDirectory) return null
+
+            // Look for maven-core-*.jar to extract version
+            val mavenCoreJar = libDir.listFiles { file ->
+                file.name.startsWith("maven-core-") && file.name.endsWith(".jar")
+            }?.firstOrNull()
+
+            if (mavenCoreJar != null) {
+                val matcher = Regex("""maven-core-([0-9.]+)""").find(mavenCoreJar.name)
+                matcher?.groupValues?.get(1)
+            } else {
+                // Fallback: try using mvn --version command
+                val process = ProcessBuilder("mvn", "--version").redirectErrorStream(true).start()
+                val output = process.inputStream.bufferedReader().readText()
+                process.waitFor()
+
+                val versionMatcher = Regex("""Apache Maven ([0-9.]+)""").find(output)
+                versionMatcher?.groupValues?.get(1)
+            }
+        } catch (e: Exception) {
+            log.debug("Could not detect Maven version: ${e.message}")
+            null
+        }
+    }
+
+    /**
+     * Check if Maven version is 4.x or later.
+     */
+    private fun isMaven4OrLater(version: String?): Boolean {
+        if (version == null) return true // Assume 4.x if we can't detect
+
+        return try {
+            val majorVersion = version.split(".")[0].toIntOrNull() ?: return true
+            majorVersion >= 4
+        } catch (e: Exception) {
+            true // Assume 4.x on error
         }
     }
 
