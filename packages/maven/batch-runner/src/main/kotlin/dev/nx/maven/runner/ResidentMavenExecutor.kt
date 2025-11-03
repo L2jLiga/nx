@@ -53,8 +53,11 @@ class ResidentMavenExecutor(
         return try {
             val mvnwFile = File(workspaceRoot, "mvnw")
             if (!mvnwFile.exists()) {
+                log.debug("No mvnw script found in workspace root: ${workspaceRoot.absolutePath}")
                 return null
             }
+
+            log.debug("Found mvnw script, running ./mvnw --version to detect Maven home...")
 
             // Run ./mvnw --version to get Maven home
             val processBuilder = ProcessBuilder("./mvnw", "--version")
@@ -63,7 +66,13 @@ class ResidentMavenExecutor(
 
             val process = processBuilder.start()
             val output = process.inputStream.bufferedReader().readText()
-            process.waitFor()
+            val exitCode = process.waitFor()
+
+            log.debug("./mvnw --version output:\n$output")
+
+            if (exitCode != 0) {
+                log.warn("./mvnw --version exited with code $exitCode")
+            }
 
             // Parse "Maven home: /path/to/maven" from output
             val matcher = Regex("""Maven home:\s*(.+)""").find(output)
@@ -73,11 +82,15 @@ class ResidentMavenExecutor(
                 if (mavenHome.isDirectory && File(mavenHome, "lib").isDirectory) {
                     log.info("Found Maven home from ./mvnw --version: $mavenHomePath")
                     return mavenHome
+                } else {
+                    log.warn("Maven home from ./mvnw does not exist or is invalid: $mavenHomePath")
                 }
+            } else {
+                log.debug("Could not parse 'Maven home:' from ./mvnw --version output")
             }
             null
         } catch (e: Exception) {
-            log.debug("Could not extract Maven home from ./mvnw: ${e.message}")
+            log.warn("Error extracting Maven home from ./mvnw: ${e.message}")
             null
         }
     }
@@ -193,7 +206,7 @@ class ResidentMavenExecutor(
             }
         }
 
-        // Try to find Maven using `which mvn`
+        // Try to find Maven using `which mvn` but verify it's Maven 4.x
         try {
             val process = Runtime.getRuntime().exec("which mvn")
             val output = process.inputStream.bufferedReader().readText().trim()
@@ -213,8 +226,14 @@ class ResidentMavenExecutor(
                 if (mavenHome != null && mavenHome.isDirectory) {
                     // Verify it looks like a Maven home (has lib and bin directories)
                     if (File(mavenHome, "lib").isDirectory && File(mavenHome, "bin").isDirectory) {
-                        log.info("Found Maven home from 'which mvn': ${mavenHome.absolutePath}")
-                        return mavenHome
+                        // Check Maven version - only use if 4.x or later
+                        val version = detectMavenVersion(mavenHome)
+                        if (isMaven4OrLater(version)) {
+                            log.info("Found Maven home from 'which mvn': ${mavenHome.absolutePath} (version: $version)")
+                            return mavenHome
+                        } else {
+                            log.debug("Found Maven from 'which mvn' but version $version is too old, need Maven 4.x")
+                        }
                     }
                 }
             }
