@@ -6,6 +6,7 @@ import org.apache.maven.execution.DefaultMavenExecutionRequest
 import org.apache.maven.execution.MavenExecutionRequest
 import org.apache.maven.execution.MavenExecutionResult
 import org.apache.maven.model.building.ModelBuildingRequest
+import org.codehaus.plexus.DefaultPlexusContainer
 import org.codehaus.plexus.classworlds.ClassWorld
 import org.slf4j.LoggerFactory
 import java.io.ByteArrayOutputStream
