@@ -238,14 +238,15 @@ class MavenInvokerRunner(private val workspaceRoot: File, private val options: M
           Thread(r, "MavenExecution-$taskId").apply { isDaemon = true }
         }
         try {
-          val future = mavenExecutor.submit {
+          // Use Callable explicitly so we get the return value, not null
+          val future = mavenExecutor.submit(java.util.concurrent.Callable {
             cachedMavenExecutor.execute(
               goals = goals,
               arguments = arguments,
               workingDir = workspaceRoot,
               outputStream = output
             )
-          }
+          })
           // 5-minute timeout per task (plenty of time for Maven, prevents infinite hangs)
           future.get(5, TimeUnit.MINUTES)
         } finally {
