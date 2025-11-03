@@ -94,14 +94,20 @@ class MavenInvokerRunner(private val workspaceRoot: File, private val options: M
           log.warn("Failed tasks: ${failedTaskIds.joinToString(", ")}")
         }
 
+        log.info("Batch results - Success: ${successfulTaskIds.size}, Failed: ${failedTaskIds.size}")
+        successfulTaskIds.forEach { log.info("✅ Successful: $it") }
+        failedTaskIds.forEach { log.info("❌ Failed: $it") }
+
         // Remove completed/failed tasks from graph and recalculate roots
         // Failed tasks and their dependents will be removed
         val oldRemainingTasks = remainingGraph.tasks.keys
+        log.info("Tasks before removal: ${oldRemainingTasks.size} tasks")
         remainingGraph = removeTasksFromTaskGraph(
           remainingGraph,
           successfulTaskIds,
           failedTaskIds
         )
+        log.info("Tasks after removal: ${remainingGraph.tasks.size} tasks (removed ${oldRemainingTasks.size - remainingGraph.tasks.size})")
 
         // Mark tasks that were removed due to failed dependencies as skipped
         val skippedTasks = oldRemainingTasks - remainingGraph.tasks.keys - successfulTaskIds.toSet() - failedTaskIds.toSet()
@@ -154,14 +160,33 @@ class MavenInvokerRunner(private val workspaceRoot: File, private val options: M
           synchronized(batchResults) {
             batchResults.add(result)
           }
+        } catch (e: Exception) {
+          log.error("Unexpected error executing task $taskId", e)
+          // Still add error result so we don't hang
+          synchronized(batchResults) {
+            batchResults.add(TaskResult(
+              taskId = taskId,
+              success = false,
+              terminalOutput = "Unexpected error: ${e.message}",
+              startTime = 0,
+              endTime = 0
+            ))
+          }
         } finally {
           latch.countDown()
         }
       }
     }
 
-    // Wait for all root tasks to complete
-    latch.await()
+    // Wait for all root tasks to complete with a timeout to prevent hanging
+    val completed = latch.await(10, TimeUnit.MINUTES)
+    if (!completed) {
+      log.error("Timeout waiting for batch of ${rootTaskIds.size} tasks to complete!")
+      log.error("Tasks still waiting: ${rootTaskIds.filter { taskId ->
+        !results.containsKey(taskId)
+      }.joinToString(", ")}")
+      // Return whatever completed tasks we have
+    }
     return batchResults
   }
 
