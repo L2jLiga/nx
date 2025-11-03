@@ -8,7 +8,7 @@
     <parent>
         <groupId>dev.nx.maven</groupId>
         <artifactId>nx-maven-parent</artifactId>
-        <version>0.0.8-SNAPSHOT</version>
+        <version>0.0.9-SNAPSHOT</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
 
@@ -34,11 +34,36 @@
     </repositories>
 
     <dependencies>
-        <!-- Maven Executor API (Maven 4.x) -->
+        <!-- Maven Executor API (Maven 4.x) - for tests -->
         <dependency>
             <groupId>org.apache.maven</groupId>
             <artifactId>maven-executor</artifactId>
             <version>4.0.0-rc-4</version>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- Maven 3.9.11 Core for low-overhead execution with caching -->
+        <dependency>
+            <groupId>org.apache.maven</groupId>
+            <artifactId>maven-embedder</artifactId>
+            <version>3.9.11</version>
+            <scope>compile</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.maven</groupId>
+            <artifactId>maven-core</artifactId>
+            <version>3.9.11</version>
+            <scope>compile</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.codehaus.plexus</groupId>
+            <artifactId>plexus-classworlds</artifactId>
+            <version>2.8.0</version>
+        </dependency>
+        <dependency>
+            <groupId>org.codehaus.plexus</groupId>
+            <artifactId>plexus-utils</artifactId>
+            <version>3.5.1</version>
         </dependency>
 
         <!-- Logging -->
@@ -140,6 +165,10 @@
                                     <mainClass>dev.nx.maven.NxMavenBatchRunnerKt</mainClass>
                                 </transformer>
                                 <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                                <!-- Combine META-INF resources for plexus components -->
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.AppendingTransformer">
+                                    <resource>META-INF/sisu/javax.inject.Named</resource>
+                                </transformer>
                             </transformers>
                             <filters>
                                 <filter>
