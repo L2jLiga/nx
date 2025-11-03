@@ -67,6 +67,8 @@ object SessionCachingMavenExecutorFactory {
 
     /**
      * Create a Plexus container for Maven.
+     * Note: This container may be from Maven 3.9 (test environment) or Maven 4.x (production).
+     * The container is used primarily to hold the MavenSession, not for component lookups.
      */
     private fun createPlexusContainer(): PlexusContainer {
         return try {

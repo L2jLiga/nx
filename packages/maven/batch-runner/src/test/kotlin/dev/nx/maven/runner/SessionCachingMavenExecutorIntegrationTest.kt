@@ -17,6 +17,10 @@ import kotlin.test.assertTrue
  * Test Project: ~/projects/triage/java/gs-multi-module/complete
  * - library module
  * - application module (depends on library)
+ *
+ * NOTE: These tests require Maven 4.x runtime with properly initialized components.
+ * If running under Maven 3.9.x, the executor creation will fail and tests will skip gracefully.
+ * The SessionCachingMavenExecutor is designed to work with Maven 4.x's component architecture.
  */
 @DisplayName("SessionCachingMavenExecutor Integration Tests")
 class SessionCachingMavenExecutorIntegrationTest {
@@ -40,8 +44,16 @@ class SessionCachingMavenExecutorIntegrationTest {
                 )
                 println("✅ SessionCachingMavenExecutor created successfully")
             } catch (e: Exception) {
-                println("⚠️  Could not create executor: ${e.message}")
-                e.printStackTrace()
+                // Component not found errors indicate Maven 4.x components not available (e.g., Maven 3.9 running tests)
+                if (e.message?.contains("ComponentLookupException") == true ||
+                    e.cause?.message?.contains("ComponentLookupException") == true) {
+                    println("⚠️  SessionCachingMavenExecutor requires Maven 4.x runtime")
+                    println("   Current Maven environment doesn't have Maven 4.x components loaded")
+                    println("   Integration tests will be skipped")
+                } else {
+                    println("⚠️  Could not create executor: ${e.message}")
+                    e.printStackTrace()
+                }
             }
         }
     }
