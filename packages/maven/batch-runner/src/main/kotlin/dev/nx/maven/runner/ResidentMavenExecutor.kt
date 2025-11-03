@@ -41,6 +41,9 @@ class ResidentMavenExecutor(
     private lateinit var parser: MavenParser
     private var initialized = false
 
+    // Cached Maven home - found once during initialization and reused
+    private var cachedMavenHome: File? = null
+
     init {
         initializeMaven()
     }
@@ -342,6 +345,10 @@ class ResidentMavenExecutor(
             // Create the Maven parser for parsing command-line arguments
             parser = MavenParser()
 
+            // Find and cache Maven home once during initialization
+            cachedMavenHome = mavenInstallationDir ?: findMavenHome()
+            log.info("Maven home: ${cachedMavenHome?.absolutePath ?: "NOT FOUND"}")
+
             initialized = true
             log.info("✅ Maven initialized with ResidentMavenInvoker (context caching enabled)")
             log.info("   - Project models will be cached across invocations")
@@ -406,8 +413,8 @@ class ResidentMavenExecutor(
             // Create a message builder factory for formatting output
             val messageBuilderFactory: MessageBuilderFactory = JLineMessageBuilderFactory()
 
-            // Determine Maven home directory
-            val mavenHome = mavenInstallationDir ?: findMavenHome()
+            // Use cached Maven home (found during initialization)
+            val mavenHome = cachedMavenHome
 
             // Create ParserRequest from our arguments
             val parserRequestBuilder = ParserRequest.mvn(allArguments.toList(), messageBuilderFactory)
