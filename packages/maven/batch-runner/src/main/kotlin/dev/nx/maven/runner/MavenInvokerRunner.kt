@@ -186,33 +186,46 @@ class MavenInvokerRunner(private val workspaceRoot: File, private val options: M
     return try {
       log.info("Executing ${goals.joinToString(", ")} for task: $taskId")
 
-      // Execute using CachedMavenExecutor (reused instance with container caching)
-      // Maven 3.9.11 with Plexus container reuse (Phase 1 optimization)
-      val exitCode = cachedMavenExecutor.execute(
-        goals = goals,
-        arguments = arguments,
-        workingDir = workspaceRoot,
-        outputStream = output
-      )
+      // Set maven.multiModuleProjectDirectory system property (required by Maven 3.9.11)
+      val previousValue = System.getProperty("maven.multiModuleProjectDirectory")
+      System.setProperty("maven.multiModuleProjectDirectory", workspaceRoot.absolutePath)
 
-      val success = exitCode == 0
-      val endTime = System.currentTimeMillis()
-      val duration = endTime - startTime
-      val outputText = output.toString()
+      try {
+        // Execute using CachedMavenExecutor (reused instance with container caching)
+        // Maven 3.9.11 with Plexus container reuse (Phase 1 optimization)
+        val exitCode = cachedMavenExecutor.execute(
+          goals = goals,
+          arguments = arguments,
+          workingDir = workspaceRoot,
+          outputStream = output
+        )
 
-      log.info("Task $taskId completed with exit code: $exitCode (${duration}ms)")
-      if (outputText.isNotEmpty()) {
-        log.info("Task $taskId output:\n$outputText")
-      }
+        val success = exitCode == 0
+        val endTime = System.currentTimeMillis()
+        val duration = endTime - startTime
+        val outputText = output.toString()
 
-      TaskResult(
-        taskId = taskId,
-        success = success,
-        terminalOutput = outputText,
-        startTime = startTime,
-        endTime = endTime
-      ).also {
-        results[taskId] = it
+        log.info("Task $taskId completed with exit code: $exitCode (${duration}ms)")
+        if (outputText.isNotEmpty()) {
+          log.info("Task $taskId output:\n$outputText")
+        }
+
+        TaskResult(
+          taskId = taskId,
+          success = success,
+          terminalOutput = outputText,
+          startTime = startTime,
+          endTime = endTime
+        ).also {
+          results[taskId] = it
+        }
+      } finally {
+        // Restore previous value
+        if (previousValue != null) {
+          System.setProperty("maven.multiModuleProjectDirectory", previousValue)
+        } else {
+          System.clearProperty("maven.multiModuleProjectDirectory")
+        }
       }
     } catch (e: Exception) {
       val errorMsg = e.message ?: "Unknown error"
