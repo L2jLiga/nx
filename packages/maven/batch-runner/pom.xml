@@ -66,35 +66,19 @@
             <scope>compile</scope>
         </dependency>
 
-        <!-- Plexus Container -->
+        <!-- Maven Invoker for batch Maven execution -->
+        <dependency>
+            <groupId>org.apache.maven.shared</groupId>
+            <artifactId>maven-invoker</artifactId>
+            <version>3.2.0</version>
+            <scope>compile</scope>
+        </dependency>
+
+        <!-- Plexus Container (required by maven-cli ResidentMavenInvoker) -->
         <dependency>
             <groupId>org.codehaus.plexus</groupId>
             <artifactId>plexus-container-default</artifactId>
-            <version>2.1.1</version>
-            <scope>compile</scope>
-        </dependency>
-
-        <!-- Aether for Repository System -->
-        <dependency>
-            <groupId>org.apache.maven.resolver</groupId>
-            <artifactId>maven-resolver-api</artifactId>
-            <version>2.0.9</version>
-            <scope>compile</scope>
-        </dependency>
-
-        <!-- Maven Resolver Implementation (includes SessionBuilder for Maven DI discovery) -->
-        <dependency>
-            <groupId>org.apache.maven.resolver</groupId>
-            <artifactId>maven-resolver-impl</artifactId>
-            <version>2.0.9</version>
-            <scope>compile</scope>
-        </dependency>
-
-        <!-- Eclipse Sisu for Plexus DI -->
-        <dependency>
-            <groupId>org.eclipse.sisu</groupId>
-            <artifactId>org.eclipse.sisu.plexus</artifactId>
-            <version>0.3.5</version>
+            <version>2.0.0</version>
             <scope>compile</scope>
         </dependency>
 

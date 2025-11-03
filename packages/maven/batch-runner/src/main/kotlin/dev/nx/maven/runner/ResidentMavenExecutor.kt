@@ -397,6 +397,7 @@ class ResidentMavenExecutor(
             throw RuntimeException("Maven not properly initialized")
         }
 
+        log.info("execute() called with goals: $goals, arguments: $arguments")
         val startTime = System.currentTimeMillis()
 
         // Prepare output capture streams
@@ -417,11 +418,12 @@ class ResidentMavenExecutor(
             val mavenHome = cachedMavenHome
 
             // Create ParserRequest from our arguments
+            // NOTE: We do NOT set stdOut/stdErr here because ResidentMavenInvoker may hang
+            // waiting for input if streams are not properly set up. Instead, we redirect
+            // System.out/System.err temporarily and let Maven write to those.
             val parserRequestBuilder = ParserRequest.mvn(allArguments.toList(), messageBuilderFactory)
                 .cwd(workingDir.toPath())
                 .userHome(File(System.getProperty("user.home")).toPath())
-                .stdOut(outputStream)
-                .stdErr(outputStream)
                 .embedded(true) // Running embedded, not as CLI
 
             // Set Maven home if available
@@ -488,17 +490,40 @@ class ResidentMavenExecutor(
 
             // Invoke Maven using the resident invoker
             // This will reuse the cached Maven context if available
-            val exitCode = invoker.invoke(invokerRequest)
+            log.info("About to call invoker.invoke() with request")
+
+            // ResidentMavenInvoker may try to read from stdin - provide empty input to prevent hanging
+            val originalIn = System.`in`
+            System.setIn(java.io.ByteArrayInputStream(ByteArray(0)))
+
+            val exitCode = try {
+                log.info("ResidentMavenInvoker starting execution...")
+                log.info("Thread: ${Thread.currentThread().name}")
+                val result = invoker.invoke(invokerRequest)
+                log.info("✅ invoker.invoke() completed, returned: $result")
+                result
+            } catch (e: Throwable) {
+                log.error("❌ EXCEPTION during invoker.invoke(): ${e.javaClass.simpleName}: ${e.message}", e)
+                outputStream.write("\nEXCEPTION: ${e.message}\n".toByteArray())
+                e.printStackTrace(PrintStream(outputStream, true))
+                throw e
+            } finally {
+                log.info("Finally block: restoring System.in")
+                System.setIn(originalIn)
+            }
+
+            log.info("invoker.invoke() returned with exit code: $exitCode")
 
             val duration = System.currentTimeMillis() - startTime
 
             if (exitCode == 0) {
-                log.info("Maven execution completed successfully in ${duration}ms")
+                log.info("✅ Maven execution completed successfully with exit code $exitCode in ${duration}ms")
                 log.debug("   - Used cached context (no project rescanning)")
             } else {
-                log.warn("Maven execution failed with code $exitCode in ${duration}ms")
+                log.warn("❌ Maven execution failed with exit code $exitCode in ${duration}ms")
             }
 
+            log.info("execute() returning exit code: $exitCode")
             exitCode
         } catch (e: InvokerException) {
             log.error("Maven invocation failed: ${e.message}", e)
@@ -508,12 +533,14 @@ class ResidentMavenExecutor(
                 outputStream.write("Cause: ${e.cause?.message}\n".toByteArray())
             }
             e.printStackTrace(captureErr)
+            log.info("execute() returning exit code: 1 (InvokerException)")
             1
         } catch (e: Exception) {
             log.error("Unexpected error executing Maven: ${e.message}", e)
             outputStream.write("ERROR: Unexpected error during Maven execution\n".toByteArray())
             outputStream.write("${e.message}\n".toByteArray())
             e.printStackTrace(captureErr)
+            log.info("execute() returning exit code: 1 (Exception)")
             1
         }
     }
