@@ -506,7 +506,7 @@ class ResidentMavenExecutor(
                 log.error("❌ EXCEPTION during invoker.invoke(): ${e.javaClass.simpleName}: ${e.message}", e)
                 outputStream.write("\nEXCEPTION: ${e.message}\n".toByteArray())
                 e.printStackTrace(PrintStream(outputStream, true))
-                throw e
+                1  // Return failure exit code
             } finally {
                 log.info("Finally block: restoring System.in")
                 System.setIn(originalIn)
