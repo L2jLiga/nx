@@ -43,7 +43,7 @@ fun removeTasksFromTaskGraph(
     tasksToRemove.addAll(dependents)
 
     if (dependents.isNotEmpty()) {
-      log.warn(
+      log.debug(
         "Task '$failedTask' failed. Skipping dependent tasks: ${dependents.joinToString(", ")}"
       )
     }
