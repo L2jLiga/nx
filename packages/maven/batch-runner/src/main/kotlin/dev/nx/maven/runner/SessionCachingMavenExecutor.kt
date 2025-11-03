@@ -26,11 +26,14 @@ import java.io.File
  * 5. Save built projects for next task
  *
  * Expected savings: 30-100ms per task (POM parsing + dependency resolution)
+ *
+ * NOTE: Requires Maven 4.x with properly initialized Plexus components.
+ * For Maven 3.9.x environments, use ProcessBasedMavenExecutor instead.
  */
 class SessionCachingMavenExecutor(
     private val plexusContainer: PlexusContainer,
     private val mavenSession: MavenSession
-) {
+) : MavenExecutor {
     private val log = LoggerFactory.getLogger(SessionCachingMavenExecutor::class.java)
 
     // Projects from last successful execution (reused for next task if applicable)
@@ -50,11 +53,11 @@ class SessionCachingMavenExecutor(
      * @param outputStream Output stream for Maven output
      * @return Exit code (0 = success)
      */
-    fun execute(
+    override fun execute(
         goals: List<String>,
         arguments: List<String>,
         workingDir: File,
-        outputStream: ByteArrayOutputStream = ByteArrayOutputStream()
+        outputStream: ByteArrayOutputStream
     ): Int {
         val startTime = System.currentTimeMillis()
 
@@ -179,7 +182,7 @@ class SessionCachingMavenExecutor(
     /**
      * Shutdown and cleanup.
      */
-    fun shutdown() {
+    override fun shutdown() {
         try {
             cachedProjects = null
             cachedProjectDependencyGraph = null

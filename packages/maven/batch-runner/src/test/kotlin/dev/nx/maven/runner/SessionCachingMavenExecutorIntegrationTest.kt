@@ -32,7 +32,7 @@ class SessionCachingMavenExecutorIntegrationTest {
         )
     }
 
-    private var executor: SessionCachingMavenExecutor? = null
+    private var executor: MavenExecutor? = null
 
     @BeforeEach
     fun setup() {

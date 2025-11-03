@@ -34,9 +34,10 @@ class MavenInvokerRunner(private val workspaceRoot: File, private val options: M
   private var shutdownRequested = false
   private var executor: ExecutorService? = null
 
-  // Single SessionCachingMavenExecutor with reused MavenSession
-  // Caches projects across all invocations for maximum performance
-  private val sessionCachingExecutor = SessionCachingMavenExecutorFactory.create(
+  // Maven executor - automatically selects best available strategy:
+  // - Maven 4.x: SessionCachingMavenExecutor with project caching
+  // - Maven 3.9.x: ProcessBasedMavenExecutor (fallback via subprocess)
+  private val mavenExecutor = SessionCachingMavenExecutorFactory.create(
     workspaceRoot = workspaceRoot,
     localRepositoryPath = File(System.getProperty("user.home"), ".m2/repository")
   )
@@ -219,9 +220,10 @@ class MavenInvokerRunner(private val workspaceRoot: File, private val options: M
     return try {
       log.info("Executing ${goals.joinToString(", ")} for task: $taskId")
 
-      // Execute using SessionCachingMavenExecutor (reused session with project caching)
-      // Projects are cached across invocations, skipping POM parsing + dependency resolution
-      val exitCode = sessionCachingExecutor.execute(
+      // Execute using the appropriate Maven executor (auto-selected based on Maven version)
+      // Maven 4.x: SessionCachingMavenExecutor with project caching
+      // Maven 3.9.x: ProcessBasedMavenExecutor (subprocess fallback)
+      val exitCode = mavenExecutor.execute(
         goals = goals,
         arguments = arguments,
         workingDir = workspaceRoot,
@@ -306,13 +308,13 @@ class MavenInvokerRunner(private val workspaceRoot: File, private val options: M
       }
     }
 
-    // Shutdown SessionCachingMavenExecutor (cleans up session and cached projects)
+    // Shutdown Maven executor (cleans up resources based on executor type)
     try {
-      log.info("Shutting down SessionCachingMavenExecutor...")
-      sessionCachingExecutor.shutdown()
-      log.info("✅ SessionCachingMavenExecutor shut down")
+      log.info("Shutting down Maven executor...")
+      mavenExecutor.shutdown()
+      log.info("✅ Maven executor shut down")
     } catch (e: Exception) {
-      log.error("Failed to shutdown SessionCachingMavenExecutor: ${e.message}", e)
+      log.error("Failed to shutdown Maven executor: ${e.message}", e)
     }
   }
 

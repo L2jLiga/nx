@@ -13,29 +13,55 @@ import org.slf4j.LoggerFactory
 import java.io.File
 
 /**
- * Factory for creating a SessionCachingMavenExecutor with a single reused session.
+ * Factory for creating the best available Maven executor.
  *
- * This factory:
- * 1. Creates or gets a PlexusContainer (Maven's DI container)
- * 2. Creates a RepositorySystemSession (for artifact resolution)
- * 3. Creates a MavenSession (reused for all executions)
- * 4. Returns a SessionCachingMavenExecutor ready for batch execution
+ * Detects Maven version and creates appropriate executor:
+ * - Maven 4.x: Creates SessionCachingMavenExecutor with project caching
+ * - Maven 3.9.x: Falls back to ProcessBasedMavenExecutor via subprocess
+ *
+ * This provides version-agnostic executor creation that works in both environments.
  */
 object SessionCachingMavenExecutorFactory {
     private val log = LoggerFactory.getLogger(SessionCachingMavenExecutorFactory::class.java)
 
     /**
-     * Create a SessionCachingMavenExecutor with a single reused MavenSession.
+     * Create a MavenExecutor suitable for the current Maven version.
      *
      * @param workspaceRoot The Maven workspace root directory
      * @param localRepositoryPath Path to local Maven repository (~/.m2/repository)
-     * @return Configured SessionCachingMavenExecutor ready for batch execution
+     * @return Configured MavenExecutor (SessionCachingMavenExecutor for Maven 4.x, ProcessBasedMavenExecutor for 3.9.x)
      */
     fun create(
         workspaceRoot: File,
         localRepositoryPath: File = File(System.getProperty("user.home"), ".m2/repository")
+    ): MavenExecutor {
+        return try {
+            createSessionCachingExecutor(workspaceRoot, localRepositoryPath)
+        } catch (e: Exception) {
+            // Check if this is a Maven component not found issue (indicates Maven 3.9.x)
+            val isMavenComponentIssue = e.message?.contains("ComponentLookupException") == true ||
+                e.toString().contains("ComponentLookupException") ||
+                e.cause?.toString()?.contains("ComponentLookupException") == true
+
+            if (isMavenComponentIssue) {
+                log.warn("Maven 4.x components not available (likely Maven 3.9.x environment)")
+                log.info("SessionCachingMavenExecutor requires Maven 4.x - using ProcessBasedMavenExecutor fallback")
+                ProcessBasedMavenExecutor(workspaceRoot)
+            } else {
+                throw e
+            }
+        }
+    }
+
+    /**
+     * Attempt to create SessionCachingMavenExecutor for Maven 4.x.
+     * Throws exception if Maven 4.x components not available.
+     */
+    private fun createSessionCachingExecutor(
+        workspaceRoot: File,
+        localRepositoryPath: File
     ): SessionCachingMavenExecutor {
-        log.info("Creating SessionCachingMavenExecutor")
+        log.info("Attempting SessionCachingMavenExecutor (Maven 4.x optimized)")
 
         // Create PlexusContainer (Maven's service container)
         val plexusContainer = createPlexusContainer()
@@ -61,7 +87,7 @@ object SessionCachingMavenExecutorFactory {
             DefaultMavenExecutionResult()
         )
 
-        log.info("✅ SessionCachingMavenExecutor created with single reused session")
+        log.info("✅ SessionCachingMavenExecutor created (Maven 4.x session caching enabled)")
         return SessionCachingMavenExecutor(plexusContainer, mavenSession)
     }
 
