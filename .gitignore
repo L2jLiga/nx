@@ -75,6 +75,7 @@ storybook-static
 .kotlin
 
 .claude/settings.local.json
+CLAUDE.local.md
 
 .cursor/rules/nx-rules.mdc
 .cursor/mcp.json
