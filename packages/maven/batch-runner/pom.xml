@@ -34,23 +34,7 @@
     </repositories>
 
     <dependencies>
-        <!-- Maven 4.x Embedded Executor API for low-overhead batch execution -->
-        <dependency>
-            <groupId>org.apache.maven</groupId>
-            <artifactId>maven-executor</artifactId>
-            <version>4.0.0-rc-4</version>
-            <scope>compile</scope>
-        </dependency>
-
-        <!-- Maven Core for MavenSession and execution request -->
-        <dependency>
-            <groupId>org.apache.maven</groupId>
-            <artifactId>maven-core</artifactId>
-            <version>4.0.0-rc-4</version>
-            <scope>compile</scope>
-        </dependency>
-
-        <!-- Maven CLI for ResidentMavenInvoker and command parsing -->
+        <!-- Maven 4.0.0-rc-4 CLI for ResidentMavenInvoker -->
         <dependency>
             <groupId>org.apache.maven</groupId>
             <artifactId>maven-cli</artifactId>
@@ -58,7 +42,40 @@
             <scope>compile</scope>
         </dependency>
 
-        <!-- Maven Model for Profile and other model classes -->
+        <!-- Maven JLine for message formatting during CLI parsing -->
+        <dependency>
+            <groupId>org.apache.maven</groupId>
+            <artifactId>maven-jline</artifactId>
+            <version>4.0.0-rc-4</version>
+            <scope>compile</scope>
+        </dependency>
+
+        <!-- Google Guice without shaded ASM (as per Maven's approach) -->
+        <dependency>
+            <groupId>com.google.inject</groupId>
+            <artifactId>guice</artifactId>
+            <version>5.1.0</version>
+            <classifier>classes</classifier>
+            <scope>compile</scope>
+        </dependency>
+
+        <!-- Maven Executor API -->
+        <dependency>
+            <groupId>org.apache.maven</groupId>
+            <artifactId>maven-executor</artifactId>
+            <version>4.0.0-rc-4</version>
+            <scope>compile</scope>
+        </dependency>
+
+        <!-- Maven Core -->
+        <dependency>
+            <groupId>org.apache.maven</groupId>
+            <artifactId>maven-core</artifactId>
+            <version>4.0.0-rc-4</version>
+            <scope>compile</scope>
+        </dependency>
+
+        <!-- Maven Model -->
         <dependency>
             <groupId>org.apache.maven</groupId>
             <artifactId>maven-model</artifactId>
@@ -66,27 +83,11 @@
             <scope>compile</scope>
         </dependency>
 
-        <!-- Maven Invoker for batch Maven execution -->
+        <!-- Maven Resolver API -->
         <dependency>
-            <groupId>org.apache.maven.shared</groupId>
-            <artifactId>maven-invoker</artifactId>
-            <version>3.2.0</version>
-            <scope>compile</scope>
-        </dependency>
-
-        <!-- Plexus Container (required by maven-cli ResidentMavenInvoker) -->
-        <dependency>
-            <groupId>org.codehaus.plexus</groupId>
-            <artifactId>plexus-container-default</artifactId>
-            <version>2.1.1</version>
-            <scope>compile</scope>
-        </dependency>
-
-        <!-- Google Guice for DI (required by ResidentMavenInvoker) -->
-        <dependency>
-            <groupId>com.google.inject</groupId>
-            <artifactId>guice</artifactId>
-            <version>7.0.0</version>
+            <groupId>org.apache.maven.resolver</groupId>
+            <artifactId>maven-resolver-api</artifactId>
+            <version>2.0.9</version>
             <scope>compile</scope>
         </dependency>
 
