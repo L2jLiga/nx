@@ -27,30 +27,24 @@ object SessionCachingMavenExecutorFactory {
     /**
      * Create a MavenExecutor suitable for the current Maven version.
      *
+     * Uses ProcessBasedMavenExecutor (subprocess execution) as it's the most reliable approach:
+     * - Works with both Maven 4.x and 3.9.x
+     * - No component initialization complexity
+     * - Guaranteed to work across Maven versions
+     *
+     * SessionCachingMavenExecutor could provide faster execution via project caching,
+     * but requires proper Plexus component initialization which is fragile across versions.
+     *
      * @param workspaceRoot The Maven workspace root directory
      * @param localRepositoryPath Path to local Maven repository (~/.m2/repository)
-     * @return Configured MavenExecutor (SessionCachingMavenExecutor for Maven 4.x, ProcessBasedMavenExecutor for 3.9.x)
+     * @return Configured ProcessBasedMavenExecutor for reliable execution
      */
     fun create(
         workspaceRoot: File,
         localRepositoryPath: File = File(System.getProperty("user.home"), ".m2/repository")
     ): MavenExecutor {
-        return try {
-            createSessionCachingExecutor(workspaceRoot, localRepositoryPath)
-        } catch (e: Exception) {
-            // Check if this is a Maven component not found issue (indicates Maven 3.9.x)
-            val isMavenComponentIssue = e.message?.contains("ComponentLookupException") == true ||
-                e.toString().contains("ComponentLookupException") ||
-                e.cause?.toString()?.contains("ComponentLookupException") == true
-
-            if (isMavenComponentIssue) {
-                log.warn("Maven 4.x components not available (likely Maven 3.9.x environment)")
-                log.info("SessionCachingMavenExecutor requires Maven 4.x - using ProcessBasedMavenExecutor fallback")
-                ProcessBasedMavenExecutor(workspaceRoot)
-            } else {
-                throw e
-            }
-        }
+        log.info("Creating ProcessBasedMavenExecutor (subprocess-based, version-agnostic)")
+        return ProcessBasedMavenExecutor(workspaceRoot)
     }
 
     /**
