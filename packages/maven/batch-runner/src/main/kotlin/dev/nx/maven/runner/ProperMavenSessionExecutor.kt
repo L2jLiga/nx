@@ -66,9 +66,29 @@ class ProperMavenSessionExecutor(private val workspaceRoot: File) : MavenExecuto
             log.debug("Components discovered and registered")
 
             // Get Maven service from injector
-            val getInstanceMethod = injectorClass.getMethod("getInstance", Class::class.java, String::class.java)
-            maven = getInstanceMethod.invoke(injector, Class.forName("org.apache.maven.Maven"), "")
-                ?: throw RuntimeException("Maven service not found after discovery")
+            // Try different method signatures since InjectorImpl API may vary
+            val mavenClass = Class.forName("org.apache.maven.Maven")
+            maven = try {
+                // Try: getInstance(Class, String) - for key-based lookup (older API)
+                log.debug("Attempting getInstance(Class, String)...")
+                val getInstanceMethod = injectorClass.getMethod("getInstance", Class::class.java, String::class.java)
+                getInstanceMethod.invoke(injector, mavenClass, "")
+                    ?: throw RuntimeException("Maven service not found with getInstance(Class, String)")
+            } catch (e: NoSuchMethodException) {
+                try {
+                    // Try: getInstance(Class) - for simple type lookup (Maven 4.x API)
+                    log.debug("Attempting getInstance(Class)...")
+                    val getInstanceMethod = injectorClass.getMethod("getInstance", Class::class.java)
+                    val instance = getInstanceMethod.invoke(injector, mavenClass)
+                    log.debug("✅ Maven service obtained via getInstance(Class)")
+                    instance ?: throw RuntimeException("Maven service not found with getInstance(Class)")
+                } catch (e2: NoSuchMethodException) {
+                    log.debug("Could not find getInstance method on InjectorImpl")
+                    // Try getting all methods to see what's available
+                    log.debug("Available methods on InjectorImpl: ${injectorClass.methods.map { it.name }.distinct()}")
+                    throw RuntimeException("No suitable getInstance method found on InjectorImpl", e2)
+                }
+            }
             log.debug("Maven service obtained from injector")
 
             // Create repository session
