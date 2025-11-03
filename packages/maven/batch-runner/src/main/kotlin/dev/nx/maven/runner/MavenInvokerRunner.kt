@@ -59,6 +59,10 @@ class MavenInvokerRunner(private val workspaceRoot: File, private val options: M
     // CachedMavenExecutor uses internal ClassWorld - no MAVEN_HOME needed
     log.info("🚀 Initializing CachedMavenExecutor with container reuse (Phase 1 optimization)")
 
+    // Set maven.multiModuleProjectDirectory once for all tasks (required by Maven 3.9.11)
+    val previousMavenMultiModuleProjectDirectory = System.getProperty("maven.multiModuleProjectDirectory")
+    System.setProperty("maven.multiModuleProjectDirectory", workspaceRoot.absolutePath)
+
     var remainingGraph: TaskGraph = initialGraph
     log.info("Initial roots: ${remainingGraph.roots.joinToString(", ")}")
 
@@ -121,6 +125,13 @@ class MavenInvokerRunner(private val workspaceRoot: File, private val options: M
       }
     } finally {
       gracefulShutdown()
+
+      // Restore maven.multiModuleProjectDirectory property
+      if (previousMavenMultiModuleProjectDirectory != null) {
+        System.setProperty("maven.multiModuleProjectDirectory", previousMavenMultiModuleProjectDirectory)
+      } else {
+        System.clearProperty("maven.multiModuleProjectDirectory")
+      }
     }
 
     log.debug("Returning ${results.size} results with task IDs: ${results.keys.joinToString(", ")}")
@@ -186,46 +197,33 @@ class MavenInvokerRunner(private val workspaceRoot: File, private val options: M
     return try {
       log.info("Executing ${goals.joinToString(", ")} for task: $taskId")
 
-      // Set maven.multiModuleProjectDirectory system property (required by Maven 3.9.11)
-      val previousValue = System.getProperty("maven.multiModuleProjectDirectory")
-      System.setProperty("maven.multiModuleProjectDirectory", workspaceRoot.absolutePath)
+      // Execute using CachedMavenExecutor (reused instance with container caching)
+      // Maven 3.9.11 with Plexus container reuse (Phase 1 optimization)
+      val exitCode = cachedMavenExecutor.execute(
+        goals = goals,
+        arguments = arguments,
+        workingDir = workspaceRoot,
+        outputStream = output
+      )
 
-      try {
-        // Execute using CachedMavenExecutor (reused instance with container caching)
-        // Maven 3.9.11 with Plexus container reuse (Phase 1 optimization)
-        val exitCode = cachedMavenExecutor.execute(
-          goals = goals,
-          arguments = arguments,
-          workingDir = workspaceRoot,
-          outputStream = output
-        )
+      val success = exitCode == 0
+      val endTime = System.currentTimeMillis()
+      val duration = endTime - startTime
+      val outputText = output.toString()
 
-        val success = exitCode == 0
-        val endTime = System.currentTimeMillis()
-        val duration = endTime - startTime
-        val outputText = output.toString()
+      log.info("Task $taskId completed with exit code: $exitCode (${duration}ms)")
+      if (outputText.isNotEmpty()) {
+        log.info("Task $taskId output:\n$outputText")
+      }
 
-        log.info("Task $taskId completed with exit code: $exitCode (${duration}ms)")
-        if (outputText.isNotEmpty()) {
-          log.info("Task $taskId output:\n$outputText")
-        }
-
-        TaskResult(
-          taskId = taskId,
-          success = success,
-          terminalOutput = outputText,
-          startTime = startTime,
-          endTime = endTime
-        ).also {
-          results[taskId] = it
-        }
-      } finally {
-        // Restore previous value
-        if (previousValue != null) {
-          System.setProperty("maven.multiModuleProjectDirectory", previousValue)
-        } else {
-          System.clearProperty("maven.multiModuleProjectDirectory")
-        }
+      TaskResult(
+        taskId = taskId,
+        success = success,
+        terminalOutput = outputText,
+        startTime = startTime,
+        endTime = endTime
+      ).also {
+        results[taskId] = it
       }
     } catch (e: Exception) {
       val errorMsg = e.message ?: "Unknown error"
