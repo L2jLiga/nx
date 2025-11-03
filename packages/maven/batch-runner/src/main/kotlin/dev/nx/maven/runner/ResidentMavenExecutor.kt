@@ -46,14 +46,58 @@ class ResidentMavenExecutor(
     }
 
     /**
+     * Extract Maven home from wrapper configuration if available.
+     * Reads the maven-wrapper.properties to find the Maven distribution URL
+     * and infers the installation path.
+     */
+    private fun extractMavenHomeFromWrapper(): File? {
+        return try {
+            val userHome = System.getProperty("user.home")
+
+            // Check if there's a .mvn/wrapper/maven-wrapper.properties in workspace
+            val wrapperProps = File(workspaceRoot, ".mvn/wrapper/maven-wrapper.properties")
+            if (wrapperProps.exists()) {
+                val props = wrapperProps.readLines()
+                    .filter { it.isNotEmpty() && !it.startsWith("#") }
+                    .map { it.split("=") }
+                    .filter { it.size == 2 }
+                    .associate { it[0].trim() to it[1].trim() }
+
+                val distributionUrl = props["distributionUrl"] ?: return null
+                val matcher = Regex("""apache-maven-([0-9.]+)""").find(distributionUrl)
+                val version = matcher?.groupValues?.get(1) ?: return null
+
+                // Find in wrapper cache
+                val wrapperBaseDir = File(userHome, ".m2/wrapper/dists")
+                val versionDir = File(wrapperBaseDir, "apache-maven-$version")
+                if (versionDir.exists()) {
+                    val hashDirs = versionDir.listFiles { file -> file.isDirectory }
+                    if (hashDirs != null && hashDirs.isNotEmpty()) {
+                        val mavenHome = hashDirs[0]
+                        if (File(mavenHome, "lib").isDirectory) {
+                            log.info("Extracted Maven home from wrapper config: ${mavenHome.absolutePath}")
+                            return mavenHome
+                        }
+                    }
+                }
+            }
+            null
+        } catch (e: Exception) {
+            log.debug("Could not extract Maven home from wrapper: ${e.message}")
+            null
+        }
+    }
+
+    /**
      * Find Maven home directory from environment, system properties, Maven wrapper, or system PATH.
      * Checks in order:
      * 1. MAVEN_HOME environment variable
      * 2. maven.home system property
-     * 3. Maven wrapper in ~/.m2/wrapper/ (prioritized over system Maven)
-     * 4. Use `which mvn` to find Maven installation
-     * 5. Common Maven installation paths
-     * 6. Returns null if not found
+     * 3. Maven wrapper config in project (.mvn/wrapper/maven-wrapper.properties)
+     * 4. Maven wrapper in ~/.m2/wrapper/ (prioritized over system Maven)
+     * 5. Use `which mvn` to find Maven installation
+     * 6. Common Maven installation paths
+     * 7. Returns null if not found
      */
     private fun findMavenHome(): File? {
         // Check MAVEN_HOME environment variable
@@ -74,6 +118,12 @@ class ResidentMavenExecutor(
                 log.debug("Found Maven home from maven.home property: $mavenHomeProp")
                 return dir
             }
+        }
+
+        // Check Maven wrapper config in project (.mvn/wrapper/maven-wrapper.properties)
+        val fromWrapperConfig = extractMavenHomeFromWrapper()
+        if (fromWrapperConfig != null) {
+            return fromWrapperConfig
         }
 
         // Check Maven wrapper (prioritized over system Maven)
