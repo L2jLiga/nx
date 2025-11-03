@@ -1,56 +1,46 @@
 package dev.nx.maven.runner
 
-import org.apache.maven.DefaultMaven
-import org.apache.maven.cli.MavenCli
-import org.apache.maven.execution.DefaultMavenExecutionRequest
-import org.apache.maven.execution.MavenExecutionRequest
-import org.apache.maven.execution.MavenExecutionResult
-import org.apache.maven.model.building.ModelBuildingRequest
-import org.codehaus.plexus.DefaultPlexusContainer
-import org.codehaus.plexus.classworlds.ClassWorld
+import org.apache.maven.api.cli.ExecutorRequest
+import org.apache.maven.cling.executor.embedded.EmbeddedMavenExecutor
 import org.slf4j.LoggerFactory
 import java.io.ByteArrayOutputStream
 import java.io.File
-import java.io.PrintStream
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Cached Maven Executor for Maven 3.9.11 with minimal overhead per invocation.
+ * Cached Maven Executor using Maven 4.x EmbeddedMavenExecutor.
  *
- * Achieves <10ms overhead per invocation by:
- * 1. **Phase 1 (Implemented)**: Reusing Plexus container across all invocations (50-150ms savings)
- * 2. **Phase 2 (Optional)**: Caching MavenProject and dependency graphs (30-120ms savings)
- * 3. **Phase 3 (Optional)**: Caching execution plans (20-50ms savings)
+ * EmbeddedMavenExecutor provides in-process Maven execution with:
+ * - Context caching: ClassLoaders cached per Maven installation
+ * - Container reuse: Same executor handles multiple invocations
+ * - Automatic cleanup: Runtime-created class realms disposed
+ * - State restoration: System properties restored after each execution
  *
- * Performance Expectations:
- * - Warm cache (Phase 1+): 20-50ms overhead per invocation (75% improvement over MavenCli)
- * - Warm cache (Phase 1-3): 10-20ms overhead per invocation (if fully cached)
- * - Cold cache (no POM cache): ~100-200ms (still faster than separate processes)
+ * Achieves ~1-35ms per invocation with context caching:
+ * 1. **Phase 1 (Implemented)**: Reusing EmbeddedMavenExecutor across invocations
+ * 2. **Phase 2 (Optional)**: Caching MavenProject and dependency graphs
+ * 3. **Phase 3 (Optional)**: Caching execution plans
  *
  * Thread Safety:
- * - MavenCli.doMain() is thread-safe for concurrent calls
- * - ClassWorld is shared safely
- * - Each invocation creates isolated MavenSession
+ * - EmbeddedMavenExecutor is thread-safe with context caching enabled
+ * - Each invocation is isolated
+ * - Caches use ConcurrentHashMap for safe concurrent access
  */
 class CachedMavenExecutor {
     private val log = LoggerFactory.getLogger(CachedMavenExecutor::class.java)
 
-    // ===== Phase 1: Container Reuse =====
-    private val classWorld: ClassWorld = createClassWorld()
-    private val mavenCli: MavenCli = createMavenCli()
+    // ===== Phase 1: Executor Reuse with Context Caching =====
+    // Initialize once, reuse for all invocations
+    // (useCache=true, contextCache=true) enables container reuse and context caching
+    private val embeddedExecutor: EmbeddedMavenExecutor = EmbeddedMavenExecutor(true, true).also {
+        log.info("Created EmbeddedMavenExecutor with context caching enabled (Phase 1: Executor Reuse)")
+    }
 
     // ===== Phase 2: Project & Graph Caching =====
-    // Cache key: (pomFile, lastModified, activeProfiles)
-    // Stores List<MavenProject> for the reactor
     private val projectCache = ConcurrentHashMap<ProjectCacheKey, List<Any>>()
-
-    // Cache key: (pomFile, lastModified, activeProfiles)
-    // Stores ProjectDependencyGraph
     private val graphCache = ConcurrentHashMap<ProjectCacheKey, Any>()
 
     // ===== Phase 3: Execution Plan Caching =====
-    // Cache key: (project, goals)
-    // Stores MavenExecutionPlan (the lifecycle phases and mojos to execute)
     private val executionPlanCache = ConcurrentHashMap<ExecutionPlanCacheKey, Any>()
 
     /**
@@ -65,24 +55,45 @@ class CachedMavenExecutor {
         goals: List<String>,
         arguments: List<String>,
         workingDir: File,
-        outputStream: ByteArrayOutputStream
+        outputStream: ByteArrayOutputStream = ByteArrayOutputStream()
     ): Int {
         val startTime = System.currentTimeMillis()
-
-        val allArgs = mutableListOf<String>()
-        allArgs.addAll(goals)
-        allArgs.addAll(arguments)
 
         return try {
             log.debug("Executing Maven with goals: $goals, args: $arguments")
 
-            // Execute using MavenCli (reused container)
-            val exitCode = mavenCli.doMain(
-                allArgs.toTypedArray(),
-                workingDir.absolutePath,
-                PrintStream(outputStream),
-                System.err
-            )
+            // Ensure maven.home is set (required by Maven 4.x ExecutorRequest)
+            // Try to discover Maven installation if not already set
+            if (System.getProperty("maven.home") == null) {
+                val mavenHome = discoverMavenHome()
+                if (mavenHome != null) {
+                    System.setProperty("maven.home", mavenHome)
+                    log.debug("Set maven.home to: $mavenHome")
+                } else {
+                    log.warn("Could not discover Maven installation, maven.home not set")
+                }
+            }
+
+            // In Maven 4.x, arguments and goals are combined
+            // Goals can include flags like --version or actual Maven goals
+            val allArgs = mutableListOf<String>()
+
+            // Add explicit arguments first (like -B, -X, etc)
+            allArgs.addAll(arguments)
+
+            // Add goals (which can include flags like --version or clean, build, etc)
+            allArgs.addAll(goals)
+
+            // Create execution request using fluent builder API
+            val request = ExecutorRequest.mavenBuilder(null)
+                .arguments(allArgs)
+                .cwd(workingDir.toPath())
+                .stdOut(outputStream)
+                .stdErr(System.err)
+                .build()
+
+            // Execute using EmbeddedMavenExecutor (context cached across invocations)
+            val exitCode = embeddedExecutor.execute(request)
 
             val duration = System.currentTimeMillis() - startTime
             log.debug("Maven execution completed in ${duration}ms with exit code: $exitCode")
@@ -90,9 +101,65 @@ class CachedMavenExecutor {
             exitCode
         } catch (e: Exception) {
             val duration = System.currentTimeMillis() - startTime
-            log.error("Maven execution failed after ${duration}ms", e)
-            throw e
+            log.error("Maven execution failed after ${duration}ms: ${e.message}", e)
+            1  // Error exit code
         }
+    }
+
+    /**
+     * Discover Maven installation directory using common methods.
+     */
+    private fun discoverMavenHome(): String? {
+        // Try 1: Check MAVEN_HOME environment variable
+        val mavenHomeEnv = System.getenv("MAVEN_HOME")
+        if (mavenHomeEnv != null) {
+            val mavenDir = File(mavenHomeEnv)
+            if (mavenDir.exists() && mavenDir.isDirectory) {
+                return mavenDir.absolutePath
+            }
+        }
+
+        // Try 2: Use `which mvn` to find Maven
+        try {
+            val process = Runtime.getRuntime().exec("which mvn")
+            val output = process.inputStream.bufferedReader().readText().trim()
+            if (output.isNotEmpty()) {
+                val mvnFile = File(output)
+                if (mvnFile.exists()) {
+                    // Go up two directories from bin/mvn to get Maven home
+                    val mavenHome = mvnFile.parentFile?.parentFile?.absolutePath
+                    if (mavenHome != null) {
+                        val mavenDir = File(mavenHome)
+                        if (mavenDir.exists() && mavenDir.isDirectory) {
+                            return mavenHome
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            log.debug("Could not discover Maven via 'which mvn': ${e.message}")
+        }
+
+        // Try 3: Check common installation locations
+        val commonLocations = listOf(
+            "/usr/local/maven",
+            "/opt/maven",
+            "/usr/share/maven",
+            "${System.getProperty("user.home")}/.local/share/mise/installs/maven/3.9.11"
+        )
+
+        for (location in commonLocations) {
+            val dir = File(location)
+            if (dir.exists() && dir.isDirectory) {
+                val mvnBin = File(dir, "bin/mvn")
+                if (mvnBin.exists()) {
+                    return dir.absolutePath
+                }
+            }
+        }
+
+        log.warn("Could not discover Maven installation using any method")
+        return null
     }
 
     /**
@@ -105,14 +172,14 @@ class CachedMavenExecutor {
             projectCache.clear()
             graphCache.clear()
             executionPlanCache.clear()
-            // ClassWorld is managed by JVM, will be cleaned up on exit
+            embeddedExecutor.close()
             log.info("CachedMavenExecutor shutdown complete")
         } catch (e: Exception) {
             log.error("Error during shutdown", e)
         }
     }
 
-    // ===== Phase 2 & 3: Cache Management Methods =====
+    // ===== Cache Management =====
 
     /**
      * Clear all caches. Use when POMs have changed.
@@ -132,33 +199,6 @@ class CachedMavenExecutor {
         "graphCacheSize" to graphCache.size,
         "executionPlanCacheSize" to executionPlanCache.size
     )
-
-    // ===== Private Helper Methods =====
-
-    private fun createClassWorld(): ClassWorld {
-        return try {
-            val cw = ClassWorld(
-                "plexus.core",
-                Thread.currentThread().contextClassLoader
-            )
-            log.debug("Created ClassWorld for Maven 3.9.11")
-            cw
-        } catch (e: Exception) {
-            log.error("Failed to create ClassWorld", e)
-            throw IllegalStateException("Cannot initialize ClassWorld for Maven execution", e)
-        }
-    }
-
-    private fun createMavenCli(): MavenCli {
-        return try {
-            val cli = MavenCli(classWorld)
-            log.info("Initialized MavenCli with reusable ClassWorld (Phase 1: Container Reuse)")
-            cli
-        } catch (e: Exception) {
-            log.error("Failed to create MavenCli", e)
-            throw IllegalStateException("Cannot initialize MavenCli for Maven execution", e)
-        }
-    }
 
     // ===== Cache Key Classes =====
 
