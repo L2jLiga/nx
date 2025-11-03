@@ -36,6 +36,12 @@ class MavenInvokerRunner(private val workspaceRoot: File, private val options: M
   private var shutdownRequested = false
   private var executor: ExecutorService? = null
 
+  // Shared timeout executor pool - reused for all task timeouts (single thread is sufficient)
+  // This avoids creating a new ExecutorService per task, saving 10-50ms per invocation
+  private val timeoutExecutor: ExecutorService = Executors.newSingleThreadExecutor { r ->
+    Thread(r, "MavenTimeoutHandler").apply { isDaemon = true }
+  }
+
   // Single CachedMavenExecutor instance with container reuse enabled
   // Maven 3.9.11 implementation with Plexus container caching
   private val cachedMavenExecutor = CachedMavenExecutor()
@@ -230,31 +236,20 @@ class MavenInvokerRunner(private val workspaceRoot: File, private val options: M
       log.info("Executing ${goals.joinToString(", ")} for task: $taskId")
 
       // Execute using CachedMavenExecutor (reused instance with container caching)
-      // Maven 3.9.11 with Plexus container reuse (Phase 1 optimization)
-      // Wrap with timeout to prevent hanging Maven calls from blocking the batch
+      // Direct execution with shared timeout executor (avoiding per-task ExecutorService creation)
       log.debug("Before Maven execution for task: $taskId")
       val exitCode = try {
-        val mavenExecutor = Executors.newSingleThreadExecutor { r ->
-          Thread(r, "MavenExecution-$taskId").apply { isDaemon = true }
-        }
-        try {
-          // Use Callable explicitly so we get the return value, not null
-          val future = mavenExecutor.submit(java.util.concurrent.Callable {
-            cachedMavenExecutor.execute(
-              goals = goals,
-              arguments = arguments,
-              workingDir = workspaceRoot,
-              outputStream = output
-            )
-          })
-          // 5-minute timeout per task (plenty of time for Maven, prevents infinite hangs)
-          future.get(5, TimeUnit.MINUTES)
-        } finally {
-          mavenExecutor.shutdown()
-          if (!mavenExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
-            mavenExecutor.shutdownNow()
-          }
-        }
+        // Submit to shared timeout executor and wait with timeout
+        val future = timeoutExecutor.submit(java.util.concurrent.Callable {
+          cachedMavenExecutor.execute(
+            goals = goals,
+            arguments = arguments,
+            workingDir = workspaceRoot,
+            outputStream = output
+          )
+        })
+        // 5-minute timeout per task (plenty of time for Maven, prevents infinite hangs)
+        future.get(5, TimeUnit.MINUTES)
       } catch (e: TimeoutException) {
         log.error("Maven execution timed out for task: $taskId after 5 minutes")
         -1  // Error code for timeout
@@ -317,7 +312,7 @@ class MavenInvokerRunner(private val workspaceRoot: File, private val options: M
   }
 
   private fun gracefulShutdown() {
-    // Shutdown thread pool executor
+    // Shutdown main task execution thread pool executor
     val exec = executor
     if (exec != null && !exec.isShutdown) {
       log.info("Initiating graceful shutdown of thread pool executor...")
@@ -339,6 +334,24 @@ class MavenInvokerRunner(private val workspaceRoot: File, private val options: M
       } catch (e: InterruptedException) {
         log.warn("Interrupted while waiting for executor shutdown, forcing shutdown...")
         exec.shutdownNow()
+        Thread.currentThread().interrupt()
+      }
+    }
+
+    // Shutdown shared timeout executor
+    if (!timeoutExecutor.isShutdown) {
+      log.info("Shutting down timeout executor...")
+      timeoutExecutor.shutdown()
+      try {
+        if (!timeoutExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
+          log.warn("Timeout executor did not terminate, force shutting down...")
+          timeoutExecutor.shutdownNow()
+        } else {
+          log.info("✅ Timeout executor shut down")
+        }
+      } catch (e: InterruptedException) {
+        log.warn("Interrupted while shutting down timeout executor")
+        timeoutExecutor.shutdownNow()
         Thread.currentThread().interrupt()
       }
     }
