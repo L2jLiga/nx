@@ -269,7 +269,7 @@ class MavenInvokerRunner(private val workspaceRoot: File, private val options: M
       if (success) {
         log.info("Task $taskId completed successfully with exit code: $exitCode (${duration}ms)")
         if (outputText.isNotEmpty()) {
-          log.debug("Task $taskId output:\n$outputText")
+          log.info("Maven output for task $taskId:\n$outputText")
         }
       } else {
         // Log at ERROR level when task fails so user can see what went wrong
