@@ -50,6 +50,14 @@
             <scope>compile</scope>
         </dependency>
 
+        <!-- Maven CLI for ResidentMavenInvoker and command parsing -->
+        <dependency>
+            <groupId>org.apache.maven</groupId>
+            <artifactId>maven-cli</artifactId>
+            <version>4.0.0-rc-4</version>
+            <scope>compile</scope>
+        </dependency>
+
         <!-- Maven Model for Profile and other model classes -->
         <dependency>
             <groupId>org.apache.maven</groupId>
