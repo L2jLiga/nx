@@ -265,9 +265,19 @@ class MavenInvokerRunner(private val workspaceRoot: File, private val options: M
       val duration = endTime - startTime
       val outputText = output.toString()
 
-      log.info("Task $taskId completed with exit code: $exitCode (${duration}ms)")
-      if (outputText.isNotEmpty()) {
-        log.debug("Task $taskId output:\n$outputText")
+      if (success) {
+        log.info("Task $taskId completed successfully with exit code: $exitCode (${duration}ms)")
+        if (outputText.isNotEmpty()) {
+          log.debug("Task $taskId output:\n$outputText")
+        }
+      } else {
+        // Log at ERROR level when task fails so user can see what went wrong
+        log.error("Task $taskId FAILED with exit code: $exitCode (${duration}ms)")
+        if (outputText.isNotEmpty()) {
+          log.error("Maven output for failed task $taskId:\n$outputText")
+        } else {
+          log.error("Task $taskId had no output from Maven")
+        }
       }
 
       val result = TaskResult(
@@ -284,12 +294,17 @@ class MavenInvokerRunner(private val workspaceRoot: File, private val options: M
     } catch (e: Exception) {
       val errorMsg = e.message ?: "Unknown error"
       val endTime = System.currentTimeMillis()
-      log.error("Task $taskId failed: $errorMsg", e)
+      val outputText = output.toString()
+
+      log.error("Task $taskId failed with exception: $errorMsg", e)
+      if (outputText.isNotEmpty()) {
+        log.error("Maven output before exception for task $taskId:\n$outputText")
+      }
 
       val result = TaskResult(
         taskId = taskId,
         success = false,
-        terminalOutput = output.toString() + "\nError: $errorMsg",
+        terminalOutput = outputText + "\nError: $errorMsg",
         startTime = startTime,
         endTime = endTime
       )
