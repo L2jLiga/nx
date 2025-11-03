@@ -46,6 +46,44 @@ class ResidentMavenExecutor(
     }
 
     /**
+     * Find Maven home directory from environment or system properties.
+     * Checks:
+     * 1. MAVEN_HOME environment variable
+     * 2. maven.home system property
+     * 3. Returns null if not found
+     */
+    private fun findMavenHome(): File? {
+        // Check MAVEN_HOME environment variable
+        val mavenHomeEnv = System.getenv("MAVEN_HOME")
+        if (mavenHomeEnv != null && mavenHomeEnv.isNotEmpty()) {
+            val dir = File(mavenHomeEnv)
+            if (dir.isDirectory) {
+                log.debug("Found Maven home from MAVEN_HOME env var: $mavenHomeEnv")
+                return dir
+            }
+        }
+
+        // Check maven.home system property
+        val mavenHomeProp = System.getProperty("maven.home")
+        if (mavenHomeProp != null && mavenHomeProp.isNotEmpty()) {
+            val dir = File(mavenHomeProp)
+            if (dir.isDirectory) {
+                log.debug("Found Maven home from maven.home property: $mavenHomeProp")
+                return dir
+            }
+        }
+
+        // Try to detect from current Java execution (if mvn script set it)
+        val classPath = System.getProperty("java.class.path") ?: ""
+        if (classPath.contains("maven")) {
+            log.debug("Maven detected in classpath but MAVEN_HOME not explicitly set")
+        }
+
+        log.warn("Could not determine Maven home directory. Set MAVEN_HOME environment variable or maven.home system property")
+        return null
+    }
+
+    /**
      * Initialize Maven using ResidentMavenInvoker.
      * Creates a resident Maven instance that persists across invocations.
      */
@@ -130,14 +168,23 @@ class ResidentMavenExecutor(
             // Create a message builder factory for formatting output
             val messageBuilderFactory: MessageBuilderFactory = JLineMessageBuilderFactory()
 
+            // Determine Maven home directory
+            val mavenHome = mavenInstallationDir ?: findMavenHome()
+
             // Create ParserRequest from our arguments
-            val parserRequest = ParserRequest.mvn(allArguments.toList(), messageBuilderFactory)
+            val parserRequestBuilder = ParserRequest.mvn(allArguments.toList(), messageBuilderFactory)
                 .cwd(workingDir.toPath())
                 .userHome(File(System.getProperty("user.home")).toPath())
                 .stdOut(outputStream)
                 .stdErr(outputStream)
                 .embedded(true) // Running embedded, not as CLI
-                .build()
+
+            // Set Maven home if available
+            if (mavenHome != null) {
+                parserRequestBuilder.mavenHome(mavenHome.toPath())
+            }
+
+            val parserRequest = parserRequestBuilder.build()
 
             // Parse the request to get InvokerRequest
             val invokerRequest = try {
