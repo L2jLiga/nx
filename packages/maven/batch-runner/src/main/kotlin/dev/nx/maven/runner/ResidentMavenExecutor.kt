@@ -46,11 +46,48 @@ class ResidentMavenExecutor(
     }
 
     /**
+     * Extract Maven home by running ./mvnw --version and parsing the output.
+     * The Maven wrapper script prints "Maven home: /path/to/maven" which we can extract.
+     */
+    private fun extractMavenHomeFromMvnw(): File? {
+        return try {
+            val mvnwFile = File(workspaceRoot, "mvnw")
+            if (!mvnwFile.exists()) {
+                return null
+            }
+
+            // Run ./mvnw --version to get Maven home
+            val processBuilder = ProcessBuilder("./mvnw", "--version")
+                .directory(workspaceRoot)
+                .redirectErrorStream(true)
+
+            val process = processBuilder.start()
+            val output = process.inputStream.bufferedReader().readText()
+            process.waitFor()
+
+            // Parse "Maven home: /path/to/maven" from output
+            val matcher = Regex("""Maven home:\s*(.+)""").find(output)
+            if (matcher != null) {
+                val mavenHomePath = matcher.groupValues[1].trim()
+                val mavenHome = File(mavenHomePath)
+                if (mavenHome.isDirectory && File(mavenHome, "lib").isDirectory) {
+                    log.info("Found Maven home from ./mvnw --version: $mavenHomePath")
+                    return mavenHome
+                }
+            }
+            null
+        } catch (e: Exception) {
+            log.debug("Could not extract Maven home from ./mvnw: ${e.message}")
+            null
+        }
+    }
+
+    /**
      * Extract Maven home from wrapper configuration if available.
      * Reads the maven-wrapper.properties to find the Maven distribution URL
      * and infers the installation path.
      */
-    private fun extractMavenHomeFromWrapper(): File? {
+    private fun extractMavenHomeFromWrapperConfig(): File? {
         return try {
             val userHome = System.getProperty("user.home")
 
@@ -83,7 +120,7 @@ class ResidentMavenExecutor(
             }
             null
         } catch (e: Exception) {
-            log.debug("Could not extract Maven home from wrapper: ${e.message}")
+            log.debug("Could not extract Maven home from wrapper config: ${e.message}")
             null
         }
     }
@@ -93,11 +130,12 @@ class ResidentMavenExecutor(
      * Checks in order:
      * 1. MAVEN_HOME environment variable
      * 2. maven.home system property
-     * 3. Maven wrapper config in project (.mvn/wrapper/maven-wrapper.properties)
-     * 4. Maven wrapper in ~/.m2/wrapper/ (prioritized over system Maven)
-     * 5. Use `which mvn` to find Maven installation
-     * 6. Common Maven installation paths
-     * 7. Returns null if not found
+     * 3. ./mvnw --version output (most accurate for wrapper projects)
+     * 4. Maven wrapper config in project (.mvn/wrapper/maven-wrapper.properties)
+     * 5. Maven wrapper in ~/.m2/wrapper/ (prioritized over system Maven)
+     * 6. Use `which mvn` to find Maven installation
+     * 7. Common Maven installation paths
+     * 8. Returns null if not found
      */
     private fun findMavenHome(): File? {
         // Check MAVEN_HOME environment variable
@@ -120,8 +158,14 @@ class ResidentMavenExecutor(
             }
         }
 
+        // Run ./mvnw --version to get Maven home (most accurate for wrapper projects)
+        val fromMvnw = extractMavenHomeFromMvnw()
+        if (fromMvnw != null) {
+            return fromMvnw
+        }
+
         // Check Maven wrapper config in project (.mvn/wrapper/maven-wrapper.properties)
-        val fromWrapperConfig = extractMavenHomeFromWrapper()
+        val fromWrapperConfig = extractMavenHomeFromWrapperConfig()
         if (fromWrapperConfig != null) {
             return fromWrapperConfig
         }
