@@ -46,11 +46,12 @@ class ResidentMavenExecutor(
     }
 
     /**
-     * Find Maven home directory from environment or system properties.
-     * Checks:
+     * Find Maven home directory from environment, system properties, or system PATH.
+     * Checks in order:
      * 1. MAVEN_HOME environment variable
      * 2. maven.home system property
-     * 3. Returns null if not found
+     * 3. Use `which mvn` to find Maven installation
+     * 4. Returns null if not found
      */
     private fun findMavenHome(): File? {
         // Check MAVEN_HOME environment variable
@@ -73,14 +74,64 @@ class ResidentMavenExecutor(
             }
         }
 
-        // Try to detect from current Java execution (if mvn script set it)
-        val classPath = System.getProperty("java.class.path") ?: ""
-        if (classPath.contains("maven")) {
-            log.debug("Maven detected in classpath but MAVEN_HOME not explicitly set")
+        // Try to find Maven using `which mvn`
+        try {
+            val process = Runtime.getRuntime().exec("which mvn")
+            val output = process.inputStream.bufferedReader().readText().trim()
+            process.waitFor()
+
+            if (output.isNotEmpty()) {
+                var mvnFile = File(output)
+
+                // Resolve symlinks
+                while (mvnFile.isSymbolicLink()) {
+                    val target = mvnFile.canonicalPath
+                    mvnFile = File(target)
+                }
+
+                // Navigate from bin/mvn up to Maven home (usually ../../)
+                val mavenHome = mvnFile.parentFile?.parentFile // Go from bin/mvn to maven_home
+                if (mavenHome != null && mavenHome.isDirectory) {
+                    // Verify it looks like a Maven home (has lib and bin directories)
+                    if (File(mavenHome, "lib").isDirectory && File(mavenHome, "bin").isDirectory) {
+                        log.info("Found Maven home from 'which mvn': ${mavenHome.absolutePath}")
+                        return mavenHome
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            log.debug("Could not use 'which mvn' to find Maven: ${e.message}")
         }
 
-        log.warn("Could not determine Maven home directory. Set MAVEN_HOME environment variable or maven.home system property")
+        // Try common Maven installation paths
+        val commonPaths = listOf(
+            "/usr/local/opt/maven",  // Homebrew on macOS
+            "/usr/local/maven",      // Linux
+            "/opt/maven",            // Common Linux path
+            System.getProperty("user.home") + "/.m2/maven"  // User-local
+        )
+
+        for (path in commonPaths) {
+            val dir = File(path)
+            if (dir.isDirectory && File(dir, "lib").isDirectory) {
+                log.debug("Found Maven home at common path: $path")
+                return dir
+            }
+        }
+
+        log.warn("Could not determine Maven home directory. Set MAVEN_HOME environment variable, maven.home system property, or ensure 'mvn' is in PATH")
         return null
+    }
+
+    /**
+     * Check if a file is a symbolic link.
+     */
+    private fun File.isSymbolicLink(): Boolean {
+        return try {
+            this.canonicalPath != this.absolutePath
+        } catch (e: Exception) {
+            false
+        }
     }
 
     /**
