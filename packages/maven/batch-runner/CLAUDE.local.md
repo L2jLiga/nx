@@ -10,8 +10,7 @@ Per-execution overhead (cached):      1.3ms average
   - Execution context setup:          ~0.1-0.2ms
 ```
 
-**Measured via**: `PerformanceBenchmarkTest`
-**Current throughput**: 190 executions/second
+**Current throughput**: ~190 executions/second (estimated)
 
 ## Identified Bottlenecks
 
@@ -56,7 +55,7 @@ Cache parsed MavenProject objects keyed by POM path + last-modified timestamp.
 4. **Measurement**
    - Add `getCacheStats()` method to track hit/miss rates
    - Log "Cache hit" or "Cache miss" at DEBUG level
-   - Benchmark improvement with PerformanceBenchmarkTest
+   - Benchmark improvement with unit/integration tests
 
 ## Phase 3: Execution Plan Caching
 
@@ -170,7 +169,6 @@ Phase 3 (Plan caching):     <0.5ms per task (200-1000x improvement)
 
 ### Existing Classes to Modify
 - `CachedMavenExecutor` - Integrate caching layers
-- `PerformanceBenchmarkTest` - Add Phase 2 & 3 benchmarks
 
 ### Avoid Modifying
 - EmbeddedMavenExecutor - It's external, don't fork it
@@ -179,13 +177,12 @@ Phase 3 (Plan caching):     <0.5ms per task (200-1000x improvement)
 ## Debugging Tips
 
 1. **To see cache operations**:
-   ```bash
-   mvn test -Dtest=PerformanceBenchmarkTest -X 2>&1 | grep -i "cache"
-   ```
+   - Enable DEBUG logging: `mvn -X ...`
+   - Look for "Cache hit" and "Cache miss" log messages
 
 2. **To measure cache effectiveness**:
    - Check `getCacheStats()` after batch execution
-   - Compare with benchmark results
+   - Compare execution times with/without cache
 
 3. **To diagnose cache misses**:
    - Log cache key calculations
@@ -194,9 +191,8 @@ Phase 3 (Plan caching):     <0.5ms per task (200-1000x improvement)
 
 ## Related Files
 
-- `PerformanceBenchmarkTest.kt` - Benchmark suite (add Phase 2 & 3 tests here)
 - `CachedMavenExecutor.kt` - Integration point for caching
-- `tmp/notes/performance-benchmark-results.md` - Baseline measurements
+- `CachedMavenExecutorTest.kt` - Unit tests for executor
 
 ---
 
