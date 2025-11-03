@@ -85,10 +85,16 @@ class MavenInvokerRunner(private val workspaceRoot: File, private val options: M
         val batchDuration = System.currentTimeMillis() - batchStartTime
         log.info("Batch execution completed in ${batchDuration}ms")
 
-        // Separate successful and failed tasks
+        // Separate successful and failed tasks from the current batch roots
+        // Note: We check the 'results' map, not batchResults, because that's where task completions are tracked
         val graphUpdateStartTime = System.currentTimeMillis()
-        val successfulTaskIds = batchResults.filter { it.success }.map { it.taskId }
-        val failedTaskIds = batchResults.filter { !it.success }.map { it.taskId }
+        val currentBatchRoots = remainingGraph.roots.toSet()
+        val successfulTaskIds = currentBatchRoots.filter { taskId ->
+          results[taskId]?.success == true
+        }.toList()
+        val failedTaskIds = currentBatchRoots.filter { taskId ->
+          results[taskId]?.success == false
+        }.toList()
 
         if (failedTaskIds.isNotEmpty()) {
           log.warn("Failed tasks: ${failedTaskIds.joinToString(", ")}")
