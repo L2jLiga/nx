@@ -116,6 +116,9 @@ class ResidentMavenExecutor(
 
         val startTime = System.currentTimeMillis()
 
+        // Prepare output capture streams
+        val captureErr = PrintStream(outputStream, true)
+
         return try {
             // Build Maven CLI arguments: combine goals and other arguments
             val allArguments = ArrayList<String>()
@@ -123,10 +126,6 @@ class ResidentMavenExecutor(
             allArguments.addAll(goals)
 
             log.debug("Executing Maven with goals: $goals, arguments: $arguments from directory: $workingDir")
-
-            // Capture output
-            val captureOut = PrintStream(outputStream, true)
-            val captureErr = PrintStream(outputStream, true)
 
             // Create a message builder factory for formatting output
             val messageBuilderFactory: MessageBuilderFactory = JLineMessageBuilderFactory()
@@ -145,13 +144,53 @@ class ResidentMavenExecutor(
                 parser.parseInvocation(parserRequest)
             } catch (e: Exception) {
                 log.error("Failed to parse Maven invocation: ${e.message}", e)
-                captureErr.println("ERROR: Failed to parse Maven command: ${e.message}")
+                outputStream.write("ERROR: Failed to parse Maven command: ${e.message}\n".toByteArray())
+                if (e.cause != null) {
+                    outputStream.write("Cause: ${e.cause?.message}\n".toByteArray())
+                }
+                e.printStackTrace(captureErr)
                 return 1
             }
 
-            // Check if parsing failed
+            // Check if parsing failed and extract error messages from logger
             if (invokerRequest.parsingFailed()) {
                 log.error("Maven argument parsing failed")
+                outputStream.write("ERROR: Maven argument parsing failed\n".toByteArray())
+
+                // Try to get accumulated error messages from the logger
+                val logger = parserRequest.logger()
+                try {
+                    val accumulatingLoggerClass = Class.forName("org.apache.maven.api.cli.logging.AccumulatingLogger")
+                    if (accumulatingLoggerClass.isInstance(logger)) {
+                        val drainMethod = accumulatingLoggerClass.getMethod("drain")
+                        val entries = drainMethod.invoke(logger) as List<*>
+
+                        if (entries.isNotEmpty()) {
+                            outputStream.write("\nParsing Error Details:\n".toByteArray())
+                            for (entry in entries) {
+                                val levelField = entry?.javaClass?.getDeclaredField("level")
+                                val messageField = entry?.javaClass?.getDeclaredField("message")
+                                val errorField = entry?.javaClass?.getDeclaredField("error")
+
+                                levelField?.isAccessible = true
+                                messageField?.isAccessible = true
+                                errorField?.isAccessible = true
+
+                                val level = levelField?.get(entry)?.toString() ?: "UNKNOWN"
+                                val message = messageField?.get(entry)?.toString() ?: ""
+                                val error = errorField?.get(entry)
+
+                                outputStream.write("[$level] $message\n".toByteArray())
+                                if (error != null && error != "null") {
+                                    outputStream.write("  Error: $error\n".toByteArray())
+                                }
+                            }
+                        }
+                    }
+                } catch (e: Exception) {
+                    log.debug("Could not extract error details from logger: ${e.message}")
+                }
+
                 return 1
             }
 
@@ -171,11 +210,18 @@ class ResidentMavenExecutor(
             exitCode
         } catch (e: InvokerException) {
             log.error("Maven invocation failed: ${e.message}", e)
-            outputStream.write("ERROR: Maven execution failed: ${e.message}\n".toByteArray())
+            outputStream.write("ERROR: Maven execution failed\n".toByteArray())
+            outputStream.write("${e.message}\n".toByteArray())
+            if (e.cause != null) {
+                outputStream.write("Cause: ${e.cause?.message}\n".toByteArray())
+            }
+            e.printStackTrace(captureErr)
             1
         } catch (e: Exception) {
             log.error("Unexpected error executing Maven: ${e.message}", e)
-            outputStream.write("ERROR: Unexpected error: ${e.message}\n".toByteArray())
+            outputStream.write("ERROR: Unexpected error during Maven execution\n".toByteArray())
+            outputStream.write("${e.message}\n".toByteArray())
+            e.printStackTrace(captureErr)
             1
         }
     }
