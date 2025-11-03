@@ -85,11 +85,12 @@ class CachedMavenExecutor {
             allArgs.addAll(goals)
 
             // Create execution request using fluent builder API
+            // Capture both stdout and stderr to the same output stream so we get all Maven output
             val request = ExecutorRequest.mavenBuilder(null)
                 .arguments(allArgs)
                 .cwd(workingDir.toPath())
                 .stdOut(outputStream)
-                .stdErr(System.err)
+                .stdErr(outputStream)  // Capture stderr too (Maven errors go here!)
                 .build()
 
             // Execute using EmbeddedMavenExecutor (context cached across invocations)
