@@ -97,7 +97,7 @@ class CachedMavenExecutor {
             val exitCode = embeddedExecutor.execute(request)
 
             val duration = System.currentTimeMillis() - startTime
-            log.debug("Maven execution completed in ${duration}ms with exit code: $exitCode")
+            log.info("Maven execution completed in ${duration}ms with exit code: $exitCode")
 
             exitCode
         } catch (e: Exception) {
