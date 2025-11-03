@@ -74,6 +74,14 @@
             <scope>compile</scope>
         </dependency>
 
+        <!-- Maven Resolver Implementation (includes SessionBuilder for Maven DI discovery) -->
+        <dependency>
+            <groupId>org.apache.maven.resolver</groupId>
+            <artifactId>maven-resolver-impl</artifactId>
+            <version>1.9.18</version>
+            <scope>compile</scope>
+        </dependency>
+
         <!-- Eclipse Sisu for Plexus DI -->
         <dependency>
             <groupId>org.eclipse.sisu</groupId>
