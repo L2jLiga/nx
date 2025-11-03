@@ -15,6 +15,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 
 /**
  * Batch runner that executes Maven tasks using Maven 3.9.11 with container reuse optimization.
@@ -230,12 +231,34 @@ class MavenInvokerRunner(private val workspaceRoot: File, private val options: M
 
       // Execute using CachedMavenExecutor (reused instance with container caching)
       // Maven 3.9.11 with Plexus container reuse (Phase 1 optimization)
-      val exitCode = cachedMavenExecutor.execute(
-        goals = goals,
-        arguments = arguments,
-        workingDir = workspaceRoot,
-        outputStream = output
-      )
+      // Wrap with timeout to prevent hanging Maven calls from blocking the batch
+      log.debug("Before Maven execution for task: $taskId")
+      val exitCode = try {
+        val mavenExecutor = Executors.newSingleThreadExecutor { r ->
+          Thread(r, "MavenExecution-$taskId").apply { isDaemon = true }
+        }
+        try {
+          val future = mavenExecutor.submit {
+            cachedMavenExecutor.execute(
+              goals = goals,
+              arguments = arguments,
+              workingDir = workspaceRoot,
+              outputStream = output
+            )
+          }
+          // 5-minute timeout per task (plenty of time for Maven, prevents infinite hangs)
+          future.get(5, TimeUnit.MINUTES)
+        } finally {
+          mavenExecutor.shutdown()
+          if (!mavenExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
+            mavenExecutor.shutdownNow()
+          }
+        }
+      } catch (e: TimeoutException) {
+        log.error("Maven execution timed out for task: $taskId after 5 minutes")
+        -1  // Error code for timeout
+      }
+      log.debug("After Maven execution for task: $taskId, exit code: $exitCode")
 
       val success = exitCode == 0
       val endTime = System.currentTimeMillis()
@@ -244,32 +267,36 @@ class MavenInvokerRunner(private val workspaceRoot: File, private val options: M
 
       log.info("Task $taskId completed with exit code: $exitCode (${duration}ms)")
       if (outputText.isNotEmpty()) {
-        log.info("Task $taskId output:\n$outputText")
+        log.debug("Task $taskId output:\n$outputText")
       }
 
-      TaskResult(
+      val result = TaskResult(
         taskId = taskId,
         success = success,
         terminalOutput = outputText,
         startTime = startTime,
         endTime = endTime
-      ).also {
-        results[taskId] = it
-      }
+      )
+      log.debug("Adding result to map for task: $taskId (success=$success)")
+      results[taskId] = result
+      log.debug("Result added to map for task: $taskId")
+      result
     } catch (e: Exception) {
       val errorMsg = e.message ?: "Unknown error"
       val endTime = System.currentTimeMillis()
       log.error("Task $taskId failed: $errorMsg", e)
 
-      TaskResult(
+      val result = TaskResult(
         taskId = taskId,
         success = false,
         terminalOutput = output.toString() + "\nError: $errorMsg",
         startTime = startTime,
         endTime = endTime
-      ).also {
-        results[taskId] = it
-      }
+      )
+      log.debug("Adding error result to map for task: $taskId")
+      results[taskId] = result
+      log.debug("Error result added to map for task: $taskId")
+      result
     }
   }
 

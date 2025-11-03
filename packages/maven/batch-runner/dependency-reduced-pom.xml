@@ -4,7 +4,7 @@
   <groupId>dev.nx.maven</groupId>
   <artifactId>maven-batch-runner</artifactId>
   <name>Nx Maven Batch Runner</name>
-  <version>0.0.8-SNAPSHOT</version>
+  <version>0.0.9-SNAPSHOT</version>
   <description>Batch runner for Nx Maven plugin using Maven Embedder API</description>
   <url>https://github.com/nrwl/nx/packages/nx-maven-parent/maven-batch-runner</url>
   <developers>
