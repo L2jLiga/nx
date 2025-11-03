@@ -42,6 +42,30 @@
             <scope>compile</scope>
         </dependency>
 
+        <!-- Maven Core for MavenSession and execution request -->
+        <dependency>
+            <groupId>org.apache.maven</groupId>
+            <artifactId>maven-core</artifactId>
+            <version>4.0.0-rc-4</version>
+            <scope>compile</scope>
+        </dependency>
+
+        <!-- Plexus Container -->
+        <dependency>
+            <groupId>org.codehaus.plexus</groupId>
+            <artifactId>plexus-container-default</artifactId>
+            <version>2.1.1</version>
+            <scope>compile</scope>
+        </dependency>
+
+        <!-- Aether for Repository System -->
+        <dependency>
+            <groupId>org.apache.maven.resolver</groupId>
+            <artifactId>maven-resolver-api</artifactId>
+            <version>1.9.18</version>
+            <scope>compile</scope>
+        </dependency>
+
         <!-- Logging -->
         <dependency>
             <groupId>org.slf4j</groupId>

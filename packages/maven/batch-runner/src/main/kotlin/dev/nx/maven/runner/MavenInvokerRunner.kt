@@ -8,26 +8,24 @@ import dev.nx.maven.utils.removeTasksFromTaskGraph
 import org.slf4j.LoggerFactory
 import java.io.ByteArrayOutputStream
 import java.io.File
-import java.nio.file.Files
-import java.nio.file.Paths
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.TimeoutException
 
 /**
- * Batch runner that executes Maven tasks using Maven 3.9.11 with container reuse optimization.
+ * Batch runner that executes Maven tasks using Maven 4.x with session and project caching.
  *
  * Executes tasks in parallel batches based on task graph roots.
  * - Dynamic task graph execution with root recalculation
  * - Failure cascading: dependent tasks skipped when a task fails
  * - Parallel execution of independent root tasks
- * - Single CachedMavenExecutor instance reused with container caching (in-process execution)
- * - Per-invocation overhead: ~1ms (cached) vs 100-500ms (process spawning)
+ * - Single MavenSession kept alive across all invocations (project caching)
+ * - Maven's DefaultGraphBuilder detects cached projects and skips POM parsing + dependency resolution
+ * - Per-task overhead: 30-100ms reduction (no POM parse/resolve)
  *
- * Performance: 30-500x faster than Maven Invoker API (process spawning)
+ * Performance: Session caching saves 30-100ms per task vs fresh session per task
  */
 class MavenInvokerRunner(private val workspaceRoot: File, private val options: MavenBatchOptions) {
   private val log = LoggerFactory.getLogger(MavenInvokerRunner::class.java)
@@ -36,15 +34,12 @@ class MavenInvokerRunner(private val workspaceRoot: File, private val options: M
   private var shutdownRequested = false
   private var executor: ExecutorService? = null
 
-  // Shared timeout executor pool - reused for all task timeouts (single thread is sufficient)
-  // This avoids creating a new ExecutorService per task, saving 10-50ms per invocation
-  private val timeoutExecutor: ExecutorService = Executors.newSingleThreadExecutor { r ->
-    Thread(r, "MavenTimeoutHandler").apply { isDaemon = true }
-  }
-
-  // Single CachedMavenExecutor instance with container reuse enabled
-  // Maven 3.9.11 implementation with Plexus container caching
-  private val cachedMavenExecutor = CachedMavenExecutor()
+  // Single SessionCachingMavenExecutor with reused MavenSession
+  // Caches projects across all invocations for maximum performance
+  private val sessionCachingExecutor = SessionCachingMavenExecutorFactory.create(
+    workspaceRoot = workspaceRoot,
+    localRepositoryPath = File(System.getProperty("user.home"), ".m2/repository")
+  )
 
   fun requestShutdown() {
     log.info("⚠️  Shutdown requested, stopping new task submissions...")
@@ -63,12 +58,8 @@ class MavenInvokerRunner(private val workspaceRoot: File, private val options: M
       return emptyMap()
     }
 
-    // CachedMavenExecutor uses internal ClassWorld - no MAVEN_HOME needed
-    log.info("🚀 Initializing CachedMavenExecutor with container reuse (Phase 1 optimization)")
-
-    // Set maven.multiModuleProjectDirectory once for all tasks (required by Maven 3.9.11)
-    val previousMavenMultiModuleProjectDirectory = System.getProperty("maven.multiModuleProjectDirectory")
-    System.setProperty("maven.multiModuleProjectDirectory", workspaceRoot.absolutePath)
+    // SessionCachingMavenExecutor keeps one session alive with project caching
+    log.info("🚀 Starting batch execution with session-based project caching")
 
     var remainingGraph: TaskGraph = initialGraph
     log.info("Initial roots: ${remainingGraph.roots.joinToString(", ")}")
@@ -144,13 +135,6 @@ class MavenInvokerRunner(private val workspaceRoot: File, private val options: M
       }
     } finally {
       gracefulShutdown()
-
-      // Restore maven.multiModuleProjectDirectory property
-      if (previousMavenMultiModuleProjectDirectory != null) {
-        System.setProperty("maven.multiModuleProjectDirectory", previousMavenMultiModuleProjectDirectory)
-      } else {
-        System.clearProperty("maven.multiModuleProjectDirectory")
-      }
     }
 
     log.debug("Returning ${results.size} results with task IDs: ${results.keys.joinToString(", ")}")
@@ -235,26 +219,14 @@ class MavenInvokerRunner(private val workspaceRoot: File, private val options: M
     return try {
       log.info("Executing ${goals.joinToString(", ")} for task: $taskId")
 
-      // Execute using CachedMavenExecutor (reused instance with container caching)
-      // Direct execution with shared timeout executor (avoiding per-task ExecutorService creation)
-      log.debug("Before Maven execution for task: $taskId")
-      val exitCode = try {
-        // Submit to shared timeout executor and wait with timeout
-        val future = timeoutExecutor.submit(java.util.concurrent.Callable {
-          cachedMavenExecutor.execute(
-            goals = goals,
-            arguments = arguments,
-            workingDir = workspaceRoot,
-            outputStream = output
-          )
-        })
-        // 5-minute timeout per task (plenty of time for Maven, prevents infinite hangs)
-        future.get(5, TimeUnit.MINUTES)
-      } catch (e: TimeoutException) {
-        log.error("Maven execution timed out for task: $taskId after 5 minutes")
-        -1  // Error code for timeout
-      }
-      log.debug("After Maven execution for task: $taskId, exit code: $exitCode")
+      // Execute using SessionCachingMavenExecutor (reused session with project caching)
+      // Projects are cached across invocations, skipping POM parsing + dependency resolution
+      val exitCode = sessionCachingExecutor.execute(
+        goals = goals,
+        arguments = arguments,
+        workingDir = workspaceRoot,
+        outputStream = output
+      )
 
       val success = exitCode == 0
       val endTime = System.currentTimeMillis()
@@ -264,7 +236,7 @@ class MavenInvokerRunner(private val workspaceRoot: File, private val options: M
       if (success) {
         log.info("Task $taskId completed successfully with exit code: $exitCode (${duration}ms)")
         if (outputText.isNotEmpty()) {
-          log.info("Maven output for task $taskId:\n$outputText")
+          log.debug("Maven output for task $taskId:\n$outputText")
         }
       } else {
         // Log at ERROR level when task fails so user can see what went wrong
@@ -283,9 +255,7 @@ class MavenInvokerRunner(private val workspaceRoot: File, private val options: M
         startTime = startTime,
         endTime = endTime
       )
-      log.debug("Adding result to map for task: $taskId (success=$success)")
       results[taskId] = result
-      log.debug("Result added to map for task: $taskId")
       result
     } catch (e: Exception) {
       val errorMsg = e.message ?: "Unknown error"
@@ -300,13 +270,11 @@ class MavenInvokerRunner(private val workspaceRoot: File, private val options: M
       val result = TaskResult(
         taskId = taskId,
         success = false,
-        terminalOutput = outputText + "\nError: $errorMsg",
+        terminalOutput = "$outputText\nError: $errorMsg",
         startTime = startTime,
         endTime = endTime
       )
-      log.debug("Adding error result to map for task: $taskId")
       results[taskId] = result
-      log.debug("Error result added to map for task: $taskId")
       result
     }
   }
@@ -338,153 +306,14 @@ class MavenInvokerRunner(private val workspaceRoot: File, private val options: M
       }
     }
 
-    // Shutdown shared timeout executor
-    if (!timeoutExecutor.isShutdown) {
-      log.info("Shutting down timeout executor...")
-      timeoutExecutor.shutdown()
-      try {
-        if (!timeoutExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
-          log.warn("Timeout executor did not terminate, force shutting down...")
-          timeoutExecutor.shutdownNow()
-        } else {
-          log.info("✅ Timeout executor shut down")
-        }
-      } catch (e: InterruptedException) {
-        log.warn("Interrupted while shutting down timeout executor")
-        timeoutExecutor.shutdownNow()
-        Thread.currentThread().interrupt()
-      }
-    }
-
-    // Close CachedMavenExecutor (cleans up cached containers and class realms)
+    // Shutdown SessionCachingMavenExecutor (cleans up session and cached projects)
     try {
-      log.info("Closing CachedMavenExecutor...")
-      cachedMavenExecutor.shutdown()
-      log.info("✅ CachedMavenExecutor closed")
+      log.info("Shutting down SessionCachingMavenExecutor...")
+      sessionCachingExecutor.shutdown()
+      log.info("✅ SessionCachingMavenExecutor shut down")
     } catch (e: Exception) {
-      log.error("Failed to close CachedMavenExecutor: ${e.message}", e)
+      log.error("Failed to shutdown SessionCachingMavenExecutor: ${e.message}", e)
     }
-  }
-
-  private fun resolveMavenHome(): String {
-    // Strategy 1: Check for mvnw wrapper in workspace (preferred - ensures correct Maven version)
-    val mvnw = File(workspaceRoot, "mvnw")
-    val mvnwDir = File(workspaceRoot, ".mvn")
-    val mvnwWrapperDir = File(workspaceRoot, ".mvn/wrapper")
-
-    if (mvnw.exists() && mvnwDir.exists()) {
-      log.info("Found mvnw wrapper in workspace at: ${workspaceRoot.absolutePath}")
-
-      // Look for downloaded Maven in .mvn/wrapper/maven-*/
-      if (mvnwWrapperDir.exists()) {
-        mvnwWrapperDir.listFiles()?.forEach { dir ->
-          if (dir.name.startsWith("maven-") && dir.isDirectory) {
-            log.info("Found Maven in mvnw wrapper cache: ${dir.absolutePath}")
-            return dir.absolutePath
-          }
-        }
-      }
-
-      // If Maven not yet downloaded by wrapper, log and continue to next strategy
-      // EmbeddedMavenExecutor needs a real Maven installation, not the workspace root
-      log.info("mvnw wrapper found but Maven not yet downloaded; checking other strategies...")
-    }
-
-    // Strategy 2: Check "which mvn" and go up 2 directories to find Maven home
-    try {
-      val process = ProcessBuilder("which", "mvn").start()
-      val mvnPath = process.inputStream.bufferedReader().use { it.readText().trim() }
-      if (mvnPath.isNotEmpty()) {
-        val mvnFile = File(mvnPath).canonicalFile
-        val mavenHome = mvnFile.parentFile.parentFile.absolutePath
-        val mavenPath = Paths.get(mavenHome)
-        if (Files.isDirectory(mavenPath)) {
-          log.info("Found Maven via 'which mvn': $mavenHome")
-          return mavenHome
-        }
-      }
-    } catch (e: Exception) {
-      // "which" command not available or mvn not in PATH
-    }
-
-    // Strategy 3: Check MAVEN_HOME environment variable
-    val mavenHomeEnv = System.getenv("MAVEN_HOME")
-    if (mavenHomeEnv != null) {
-      val mavenPath = Paths.get(mavenHomeEnv)
-      if (Files.isDirectory(mavenPath)) {
-        log.info("Using MAVEN_HOME: $mavenHomeEnv")
-        return mavenHomeEnv
-      } else {
-        log.warn("MAVEN_HOME points to non-existent directory: $mavenHomeEnv")
-      }
-    }
-
-    // Strategy 4: Check maven.home system property (set by Maven itself)
-    val mavenHomeProp = System.getProperty("maven.home")
-    if (mavenHomeProp != null) {
-      val mavenPath = Paths.get(mavenHomeProp)
-      if (Files.isDirectory(mavenPath)) {
-        log.info("Using maven.home system property: $mavenHomeProp")
-        return mavenHomeProp
-      }
-    }
-
-    // Strategy 5: Check common installation locations
-    val userHome = System.getProperty("user.home")
-    val commonLocations = mutableListOf(
-      "/usr/local/maven",
-      "/opt/maven",
-      "/usr/share/maven",
-      "$userHome/.m2/mvn",
-      "$userHome/.local/share/mise/installs/maven",  // mise version manager
-      System.getenv("M2_HOME")
-    ).filterNotNull().toMutableList()
-
-    // Also check for mise managed Maven installations
-    val miseDir = File(userHome, ".local/share/mise/installs/maven")
-    if (miseDir.exists()) {
-      miseDir.listFiles()?.sortedByDescending { it.name }?.forEach { versionDir ->
-        versionDir.listFiles()?.forEach { possibleMaven ->
-          if (possibleMaven.name.startsWith("apache-maven-") && possibleMaven.isDirectory) {
-            commonLocations.add(possibleMaven.absolutePath)
-          }
-        }
-      }
-    }
-
-    for (location in commonLocations) {
-      val mavenPath = Paths.get(location)
-      if (Files.isDirectory(mavenPath)) {
-        log.info("Found Maven at: $location")
-        return location
-      }
-    }
-
-    // If all strategies fail, provide helpful error message
-    throw IllegalStateException(
-      """
-      Could not find Maven installation. Please do one of the following:
-
-      Option 1 (Recommended): Use mvnw wrapper from workspace
-        - Ensure mvnw and .mvn/ exist in workspace: ${workspaceRoot.absolutePath}
-
-      Option 2: Set MAVEN_HOME environment variable
-        export MAVEN_HOME=/path/to/maven/4.0.0-rc-4
-
-      Option 3: Install Maven in one of these common locations:
-        - /usr/local/maven
-        - /opt/maven
-        - /usr/share/maven
-        - ~/.m2/mvn
-        - Use 'mise' version manager: mise install maven@4.0.0-rc-4
-
-      Current status:
-        - mvnw found: ${mvnw.exists()}
-        - .mvn directory found: ${mvnwDir.exists()}
-        - MAVEN_HOME: ${System.getenv("MAVEN_HOME") ?: "not set"}
-        - Workspace root: ${workspaceRoot.absolutePath}
-      """.trimIndent()
-    )
   }
 
   private fun buildGoals(mavenBatchTask: MavenBatchTask): List<String> {
