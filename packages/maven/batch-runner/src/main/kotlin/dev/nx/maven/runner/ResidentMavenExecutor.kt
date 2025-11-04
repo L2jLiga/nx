@@ -419,6 +419,10 @@ class ResidentMavenExecutor(
             // Create the Maven parser for parsing command-line arguments
             parser = MavenParser()
 
+            // Set TCCL to plexus.core ClassRealm globally for the entire JVM
+            // This ensures all threads (including thread pool threads) can load Maven/Plexus classes
+            Thread.currentThread().contextClassLoader = classWorld.getClassRealm("plexus.core")
+
             initialized = true
             log.info("✅ Maven initialized with ResidentMavenInvoker (context caching enabled)")
             log.info("   - Project models will be cached across invocations")
@@ -591,11 +595,6 @@ class ResidentMavenExecutor(
             val originalIn = System.`in`
             System.setIn(java.io.ByteArrayInputStream(ByteArray(0)))
 
-            // CRITICAL: Set TCCL to plexus.core ClassRealm before invoke()
-            // This ensures thread pool threads can load Maven/Plexus/Sisu classes from the system classloader
-            val originalTccl = Thread.currentThread().contextClassLoader
-            Thread.currentThread().contextClassLoader = classWorld.getClassRealm("plexus.core")
-
             val exitCode = try {
                 log.info("ResidentMavenInvoker starting execution...")
                 log.info("Thread: ${Thread.currentThread().name}")
@@ -622,9 +621,7 @@ class ResidentMavenExecutor(
                 e.printStackTrace(PrintStream(outputStream, true))
                 1  // Return failure exit code
             } finally {
-                log.info("Finally block: restoring System.in and TCCL")
                 System.setIn(originalIn)
-                Thread.currentThread().contextClassLoader = originalTccl
             }
 
             log.info("invoker.invoke() returned with exit code: $exitCode")
