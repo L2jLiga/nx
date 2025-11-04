@@ -113,7 +113,13 @@ export default async function mavenBatchExecutor(
     const argsJson = args.join(' ').replaceAll("'", '"');
     const workspaceDataDir = join(workspaceRoot, '.nx');
 
-    const command = `java -jar "${batchRunnerJar}" --workspaceRoot="${workspaceRoot}" --workspaceDataDirectory="${workspaceDataDir}" --tasks='${tasksJson}' --args='${argsJson}'`;
+    // Add debug logging flags if verbose mode is enabled
+    let debugFlags = '';
+    if (process.env.NX_VERBOSE_LOGGING === 'true') {
+      debugFlags = '-Dorg.slf4j.simpleLogger.defaultLogLevel=debug -Dorg.slf4j.simpleLogger.log.org.apache.maven=debug ';
+    }
+
+    const command = `java ${debugFlags}-jar "${batchRunnerJar}" --workspaceRoot="${workspaceRoot}" --workspaceDataDirectory="${workspaceDataDir}" --tasks='${tasksJson}' --args='${argsJson}'`;
 
     if (process.env.NX_VERBOSE_LOGGING === 'true') {
       console.log(`[Maven Batch] Executing: ${command}`);

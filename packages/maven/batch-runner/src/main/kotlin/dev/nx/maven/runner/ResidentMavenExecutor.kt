@@ -633,14 +633,15 @@ class ResidentMavenExecutor(
               log.debug("System.setIn() took ${stdinSetDuration}ms")
             }
 
-            val invokeStartTime = System.currentTimeMillis()
+            val invokeStartTime = System.nanoTime()
             val exitCode = try {
                 log.info("ResidentMavenInvoker starting execution...")
                 log.info("Thread: ${Thread.currentThread().name}")
-                val invokeTime = System.currentTimeMillis()
+                val invokeTimeNano = System.nanoTime()
                 val result = invoker.invoke(invokerRequest)
-                val invokeActualTime = System.currentTimeMillis() - invokeTime
-                log.info("✅ invoker.invoke() completed in ${invokeActualTime}ms, returned: $result")
+                val invokeActualTimeNano = System.nanoTime() - invokeTimeNano
+                val invokeActualTimeMs = invokeActualTimeNano / 1_000_000
+                log.info("✅ invoker.invoke() completed in ${invokeActualTimeMs}ms (${invokeActualTimeNano}ns), returned: $result")
                 result
             } catch (e: NoSuchMethodError) {
                 // Maven version mismatch - plexus-container method not available
