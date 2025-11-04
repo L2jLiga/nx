@@ -439,11 +439,14 @@ class ResidentMavenExecutor(
 
     /**
      * Add Maven's lib directory JARs to the plexus.core ClassRealm.
-     * This ensures the correct versions of Maven classes are loaded first,
-     * preventing old embedded versions in sisu.plexus from taking precedence.
+     * This ensures Maven classes from the installation are available.
+     * (plexus-container-default is shaded into the batch-runner JAR since Maven 4.x doesn't ship it)
      */
     private fun addMavenLibJarsToClassRealm() {
         try {
+            val coreRealm = classWorld.getClassRealm("plexus.core")
+            var successCount = 0
+
             val mavenHome = cachedMavenHome
             log.info("DEBUG: cachedMavenHome = $mavenHome")
 
@@ -452,32 +455,24 @@ class ResidentMavenExecutor(
             log.info("DEBUG: mavenLibDir exists? ${mavenLibDir?.exists()}")
             log.info("DEBUG: mavenLibDir isDirectory? ${mavenLibDir?.isDirectory}")
 
-            if (mavenLibDir?.isDirectory != true) {
-                log.warn("Maven lib directory not found or not a directory: ${mavenLibDir?.absolutePath}")
-                return
-            }
+            if (mavenLibDir?.isDirectory == true) {
+                val jarFiles = mavenLibDir.listFiles { file -> file.name.endsWith(".jar") } ?: emptyArray()
+                log.info("DEBUG: Found ${jarFiles.size} JAR files in Maven lib directory")
 
-            val jarFiles = mavenLibDir.listFiles { file -> file.name.endsWith(".jar") } ?: emptyArray()
-            log.info("DEBUG: Found ${jarFiles.size} JAR files in Maven lib directory")
-            jarFiles.forEach { jar ->
-                log.info("DEBUG:   - ${jar.name}")
-            }
-
-            val coreRealm = classWorld.getClassRealm("plexus.core")
-            log.info("DEBUG: Got coreRealm: $coreRealm")
-
-            var successCount = 0
-            jarFiles.forEach { jarFile ->
-                try {
-                    coreRealm.addURL(jarFile.toURI().toURL())
-                    log.info("✓ Added to ClassRealm: ${jarFile.name}")
-                    successCount++
-                } catch (e: Exception) {
-                    log.warn("✗ Failed to add JAR to ClassRealm: ${jarFile.name} - ${e.javaClass.simpleName}: ${e.message}")
+                jarFiles.forEach { jarFile ->
+                    try {
+                        coreRealm.addURL(jarFile.toURI().toURL())
+                        log.info("✓ Added to ClassRealm: ${jarFile.name}")
+                        successCount++
+                    } catch (e: Exception) {
+                        log.warn("✗ Failed to add JAR to ClassRealm: ${jarFile.name} - ${e.javaClass.simpleName}: ${e.message}")
+                    }
                 }
+            } else {
+                log.warn("Maven lib directory not found or not a directory: ${mavenLibDir?.absolutePath}")
             }
 
-            log.info("Successfully added $successCount/${jarFiles.size} Maven lib JARs to plexus.core ClassRealm")
+            log.info("Successfully added $successCount JARs to plexus.core ClassRealm")
         } catch (e: Exception) {
             log.error("ERROR in addMavenLibJarsToClassRealm: ${e.javaClass.simpleName}: ${e.message}", e)
         }
