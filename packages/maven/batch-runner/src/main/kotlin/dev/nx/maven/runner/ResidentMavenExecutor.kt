@@ -333,7 +333,8 @@ class ResidentMavenExecutor(
             log.info("Initializing Maven with ResidentMavenInvoker...")
 
             // Create ClassWorld for loading Maven classes
-            val classWorld = ClassWorld("plexus.core", Thread.currentThread().contextClassLoader)
+            // Use SystemClassLoader which includes all classpath libraries (Maven/Plexus classes)
+            val classWorld = ClassWorld("plexus.core", ClassLoader.getSystemClassLoader())
 
             // Create a basic Lookup for the invoker
             // ResidentMavenInvoker expects a Lookup that it will use to populate the MavenContext
