@@ -8,6 +8,9 @@ import dev.nx.maven.utils.removeTasksFromTaskGraph
 import org.slf4j.LoggerFactory
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 /**
  * Batch runner that executes Maven tasks using Maven 4.x with session and project caching.
@@ -34,18 +37,21 @@ class MavenInvokerRunner(private val workspaceRoot: File, private val options: M
   )
 
   fun runBatch(): Map<String, TaskResult> {
-    val results = mutableMapOf<String, TaskResult>()
+    val results = ConcurrentHashMap<String, TaskResult>()
+    val executor = Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors())
 
     log.info("Received ${options.tasks.size} tasks")
+    log.info("Thread pool size: ${Runtime.getRuntime().availableProcessors()}")
 
     val initialGraph = options.taskGraph
     if (initialGraph == null) {
       log.error("Task graph is null, cannot execute tasks")
+      executor.shutdown()
       return emptyMap()
     }
 
     // SessionCachingMavenExecutor keeps one session alive with project caching
-    log.info("🚀 Starting batch execution with session-based project caching")
+    log.info("🚀 Starting batch execution with session-based project caching and parallel root tasks")
 
     var remainingGraph: TaskGraph = initialGraph
     log.info("Initial roots: ${remainingGraph.roots.joinToString(", ")}")
@@ -55,11 +61,15 @@ class MavenInvokerRunner(private val workspaceRoot: File, private val options: M
       while (remainingGraph.roots.isNotEmpty()) {
         log.info("Executing batch of roots: ${remainingGraph.roots.joinToString(", ")}")
 
-        // Execute all root tasks sequentially (no thread pool)
+        // Execute all root tasks in parallel (thread pool)
         val batchStartTime = System.currentTimeMillis()
-        for (taskId in remainingGraph.roots) {
-          executeSingleTask(taskId, results)
+        val futures = remainingGraph.roots.map { taskId ->
+          executor.submit {
+            executeSingleTask(taskId, results)
+          }
         }
+        // Wait for all tasks in this batch to complete
+        futures.forEach { it.get() }
         val batchDuration = System.currentTimeMillis() - batchStartTime
         log.info("Batch execution completed in ${batchDuration}ms")
 
@@ -113,7 +123,7 @@ class MavenInvokerRunner(private val workspaceRoot: File, private val options: M
         log.info("Graph recalculation and task analysis took ${graphUpdateDuration}ms")
       }
     } finally {
-      gracefulShutdown()
+      gracefulShutdown(executor)
     }
 
     log.debug("Returning ${results.size} results with task IDs: ${results.keys.joinToString(", ")}")
@@ -213,7 +223,20 @@ class MavenInvokerRunner(private val workspaceRoot: File, private val options: M
     }
   }
 
-  private fun gracefulShutdown() {
+  private fun gracefulShutdown(executor: java.util.concurrent.ExecutorService) {
+    // Shutdown thread pool executor
+    try {
+      log.info("Shutting down thread pool...")
+      executor.shutdown()
+      if (!executor.awaitTermination(10, TimeUnit.SECONDS)) {
+        log.warn("Thread pool did not terminate within 10 seconds, forcing shutdown")
+        executor.shutdownNow()
+      }
+      log.info("✅ Thread pool shut down")
+    } catch (e: Exception) {
+      log.error("Failed to shutdown thread pool: ${e.message}")
+    }
+
     // Shutdown Maven executor (cleans up resources based on executor type)
     try {
       log.info("Shutting down Maven executor...")
