@@ -4,6 +4,7 @@ import org.apache.maven.api.cli.InvokerException
 import org.apache.maven.api.cli.ParserRequest
 import org.apache.maven.api.services.Lookup
 import org.apache.maven.api.services.MessageBuilderFactory
+import org.apache.maven.cling.invoker.ProtoLookup
 import org.apache.maven.cling.invoker.mvn.MavenParser
 import org.apache.maven.cling.invoker.mvn.resident.ResidentMavenInvoker
 import org.apache.maven.jline.JLineMessageBuilderFactory
@@ -12,10 +13,6 @@ import org.slf4j.LoggerFactory
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.PrintStream
-import java.util.zip.ZipFile
-import java.util.zip.ZipEntry
-import java.util.zip.ZipOutputStream
-import java.io.BufferedOutputStream
 
 /**
  * Maven Executor using ResidentMavenInvoker for efficient batch execution.
@@ -43,6 +40,7 @@ class ResidentMavenExecutor(
     // Resident invoker and parser - kept in memory for reuse
     private lateinit var invoker: ResidentMavenInvoker
     private lateinit var parser: MavenParser
+    private lateinit var classWorld: ClassWorld
     private var initialized = false
 
     // Cached Maven home - found once during initialization and reused
@@ -52,102 +50,6 @@ class ResidentMavenExecutor(
         initializeMaven()
     }
 
-    /**
-     * Patch Maven's org.eclipse.sisu.plexus JAR by replacing old ContainerConfiguration classes.
-     * The sisu.plexus JAR contains outdated plexus-container classes that lack setClassPathScanning().
-     * We extract the new classes from plexus-container-default 2.1.1 and insert them into sisu.plexus.
-     */
-    private fun ensureMavenHasPlexusContainer() {
-        try {
-            val mavenHome = cachedMavenHome ?: findMavenHome() ?: return
-            val libDir = File(mavenHome, "lib")
-
-            if (!libDir.isDirectory) {
-                log.debug("Maven lib directory not found: ${libDir.absolutePath}")
-                return
-            }
-
-            // Find sisu.plexus JAR
-            val sisuPlexus = libDir.listFiles { file ->
-                file.name.startsWith("org.eclipse.sisu.plexus") && file.name.endsWith(".jar")
-            }?.firstOrNull()
-
-            if (sisuPlexus == null) {
-                log.debug("org.eclipse.sisu.plexus not found in Maven lib - may not need patching")
-                return
-            }
-
-            // Find plexus-container-default 2.1.1
-            val userHome = System.getProperty("user.home")
-            val newPlexusContainer = File(userHome, ".m2/repository/org/codehaus/plexus/plexus-container-default/2.1.1/plexus-container-default-2.1.1.jar")
-
-            if (!newPlexusContainer.exists()) {
-                log.debug("plexus-container-default 2.1.1 not found in Maven repository")
-                return
-            }
-
-            log.info("Patching ${sisuPlexus.name} with ContainerConfiguration from plexus-container-default 2.1.1")
-            patchSisuPlexusJar(sisuPlexus, newPlexusContainer)
-
-        } catch (e: Exception) {
-            log.debug("Error patching sisu.plexus: ${e.message}")
-            // Don't fail initialization if this step fails
-        }
-    }
-
-    /**
-     * Patch sisu.plexus JAR by removing old ContainerConfiguration classes
-     * This forces Maven to load the new classes from plexus-container-default 2.1.1
-     */
-    private fun patchSisuPlexusJar(sisuJar: File, newPlexusJar: File) {
-        try {
-            log.info("Patching ${sisuJar.name} to remove old plexus-container classes...")
-
-            val classesToRemove = setOf(
-                "org/codehaus/plexus/ContainerConfiguration.class",
-                "org/codehaus/plexus/DefaultContainerConfiguration.class"
-            )
-
-            // Create backup
-            val backupFile = File(sisuJar.parent, sisuJar.name + ".bak")
-            if (!backupFile.exists()) {
-                sisuJar.copyTo(backupFile)
-                log.info("Created backup: ${backupFile.name}")
-            }
-
-            // Read all entries from sisu.plexus except the ones we want to remove
-            val tempFile = File(sisuJar.parent, sisuJar.name + ".tmp")
-
-            ZipFile(sisuJar).use { zipInput ->
-                ZipOutputStream(BufferedOutputStream(tempFile.outputStream())).use { zipOutput ->
-                    zipInput.entries().asSequence().forEach { entry ->
-                        if (entry.name !in classesToRemove) {
-                            // Copy this entry to the new JAR
-                            zipOutput.putNextEntry(ZipEntry(entry.name))
-                            if (!entry.isDirectory) {
-                                zipInput.getInputStream(entry).use { input ->
-                                    input.copyTo(zipOutput)
-                                }
-                            }
-                            zipOutput.closeEntry()
-                        } else {
-                            log.info("Removed old class: ${entry.name}")
-                        }
-                    }
-                }
-            }
-
-            // Replace original JAR with patched version
-            sisuJar.delete()
-            tempFile.renameTo(sisuJar)
-
-            log.info("✅ Successfully patched ${sisuJar.name}")
-
-        } catch (e: Exception) {
-            log.warn("Could not patch sisu.plexus JAR: ${e.message}")
-            // This is non-fatal - will fall back gracefully
-        }
-    }
 
     /**
      * Try to use Maven 4.x (required for ResidentMavenInvoker).
@@ -169,26 +71,34 @@ class ResidentMavenExecutor(
         )
 
         for (candidate in candidates) {
-            val libDir = File(candidate, "lib")
-            if (libDir.isDirectory) {
-                // Handle wrapper directory structure (hash subdirectories)
-                val hashDirs = candidate.listFiles { file -> file.isDirectory && file.name.matches(Regex("[a-f0-9]{40}")) }
-                if (hashDirs != null && hashDirs.isNotEmpty()) {
-                    val actualMavenHome = hashDirs[0]
-                    if (File(actualMavenHome, "lib").isDirectory) {
-                        log.info("Found Maven 4.0.0-rc-4 installation at: ${actualMavenHome.absolutePath}")
-                        return actualMavenHome
+            if (!candidate.exists()) {
+                continue
+            }
+
+            // Check if this is a direct Maven installation
+            val directLibDir = File(candidate, "lib")
+            if (directLibDir.isDirectory) {
+                log.info("Found Maven 4.x installation at: ${candidate.absolutePath}")
+                return candidate
+            }
+
+            // Check if this is a wrapper parent directory with hash subdirectories
+            // Maven wrapper stores installations in: ~/.m2/wrapper/dists/apache-maven-VERSION/HASH/
+            val hashDirs = candidate.listFiles { file -> file.isDirectory && file.name.matches(Regex("[a-f0-9]+")) }
+            if (hashDirs != null && hashDirs.isNotEmpty()) {
+                // Sort by directory name to prefer consistent ordering
+                val sortedDirs = hashDirs.sortedByDescending { it.name }
+                for (hashDir in sortedDirs) {
+                    val libDir = File(hashDir, "lib")
+                    if (libDir.isDirectory) {
+                        log.info("Found Maven 4.x installation at: ${hashDir.absolutePath}")
+                        return hashDir
                     }
-                }
-                // Or direct installation
-                if (libDir.isDirectory) {
-                    log.info("Found Maven 4.0.0-rc-4 installation at: ${candidate.absolutePath}")
-                    return candidate
                 }
             }
         }
 
-        log.debug("Maven 4.0.0-rc-4 not found in standard locations")
+        log.debug("Maven 4.x not found in standard locations")
         return null
     }
 
@@ -484,34 +394,30 @@ class ResidentMavenExecutor(
             log.info("Initializing Maven with ResidentMavenInvoker...")
 
             // Find and cache Maven home first
-            val mavenHome = findMavenHome()
-            if (mavenHome != null) {
-                cachedMavenHome = mavenHome
-                log.info("Maven home: ${mavenHome.absolutePath}")
-
-                // Ensure Maven installation has compatible plexus-container version
-                ensureMavenHasPlexusContainer()
+            cachedMavenHome = mavenInstallationDir ?: findMavenHome()
+            if (cachedMavenHome != null) {
+                log.info("Maven home: ${cachedMavenHome?.absolutePath}")
             } else {
                 log.warn("Could not find Maven home")
             }
 
             // Create ClassWorld for loading Maven classes
-            // Use the ClassLoader of this class, which has access to all shaded dependencies in the uber JAR
-            val classWorld = ClassWorld("plexus.core", ResidentMavenExecutor::class.java.classLoader)
+            this.classWorld = ClassWorld("plexus.core", ClassLoader.getSystemClassLoader())
+
+            // Add Maven's lib JARs to the plexus.core ClassRealm to ensure correct versions are loaded
+            // This prevents old embedded classes in sisu.plexus from taking precedence
+            addMavenLibJarsToClassRealm()
 
             // Create a basic Lookup for the invoker
             // ResidentMavenInvoker expects a Lookup that it will use to populate the MavenContext
             val lookup = createBasicLookup(classWorld)
 
             // Create the resident invoker - this will cache contexts across invocations
-            invoker = ResidentMavenInvoker(lookup, null)
+            invoker = ResidentMavenInvoker(
+              ProtoLookup.builder().addMapping(ClassWorld::class.java, classWorld).build(), null)
 
             // Create the Maven parser for parsing command-line arguments
             parser = MavenParser()
-
-            // Find and cache Maven home once during initialization
-            cachedMavenHome = mavenInstallationDir ?: findMavenHome()
-            log.info("Maven home: ${cachedMavenHome?.absolutePath ?: "NOT FOUND"}")
 
             initialized = true
             log.info("✅ Maven initialized with ResidentMavenInvoker (context caching enabled)")
@@ -524,30 +430,55 @@ class ResidentMavenExecutor(
     }
 
     /**
-     * Create a basic Lookup for the invoker.
-     * This is used by ResidentMavenInvoker to resolve Maven services.
+     * Add Maven's lib directory JARs to the plexus.core ClassRealm.
+     * This ensures the correct versions of Maven classes are loaded first,
+     * preventing old embedded versions in sisu.plexus from taking precedence.
+     */
+    private fun addMavenLibJarsToClassRealm() {
+        try {
+            val mavenLibDir = cachedMavenHome?.let { File(it, "lib") }
+            if (mavenLibDir?.isDirectory != true) {
+                log.warn("Maven lib directory not found: ${mavenLibDir?.absolutePath}")
+                return
+            }
+
+            val coreRealm = classWorld.getClassRealm("plexus.core")
+            val jarFiles = mavenLibDir.listFiles { file -> file.name.endsWith(".jar") } ?: emptyArray()
+
+            jarFiles.forEach { jarFile ->
+                try {
+                    coreRealm.addURL(jarFile.toURI().toURL())
+                    log.info("Added to ClassRealm: ${jarFile.absolutePath}")
+                } catch (e: Exception) {
+                    log.warn("Failed to add JAR to ClassRealm: ${jarFile.name} - ${e.message}")
+                }
+            }
+
+            log.info("Added ${jarFiles.size} Maven lib JARs to plexus.core ClassRealm")
+        } catch (e: Exception) {
+            log.warn("Could not add Maven lib JARs to ClassRealm: ${e.message}")
+        }
+    }
+
+    /**
+     * Create a Lookup for the invoker with ClassWorld mapping.
+     * This follows the same pattern as Maven's own test code.
      */
     private fun createBasicLookup(classWorld: ClassWorld): Lookup {
-        // Create a simple lookup using reflection to avoid hard dependency on internal APIs
+        // Use reflection to load ProtoLookup dynamically (available from shaded maven-cli)
         return try {
-            val protoLookupClass = Class.forName("org.apache.maven.cling.invoker.ProtoLookup")
-            val builderClass = protoLookupClass.getMethod("builder").invoke(null)
-            val addMappingMethod = builderClass.javaClass.getMethod("addMapping", Class::class.java, Any::class.java)
-
-            // Add ClassWorld mapping
-            addMappingMethod.invoke(builderClass, ClassWorld::class.java, classWorld)
-
-            // Build and return
-            val buildMethod = builderClass.javaClass.getMethod("build")
-            buildMethod.invoke(builderClass) as Lookup
-        } catch (e: Exception) {
-            log.warn("Could not create ProtoLookup with ClassWorld, using default: ${e.message}")
-            // If we can't create ProtoLookup, create an empty one - ResidentMavenInvoker will populate it
             val protoLookupClass = Class.forName("org.apache.maven.cling.invoker.ProtoLookup")
             val builderMethod = protoLookupClass.getMethod("builder")
             val builder = builderMethod.invoke(null)
+
+            val addMappingMethod = builder.javaClass.getMethod("addMapping", Class::class.java, Any::class.java)
+            addMappingMethod.invoke(builder, ClassWorld::class.java, classWorld)
+
             val buildMethod = builder.javaClass.getMethod("build")
             buildMethod.invoke(builder) as Lookup
+        } catch (e: Exception) {
+            log.error("Failed to create ProtoLookup with ClassWorld mapping: ${e.message}", e)
+            throw RuntimeException("Could not create ProtoLookup: ${e.message}", e)
         }
     }
 
@@ -660,10 +591,10 @@ class ResidentMavenExecutor(
             val originalIn = System.`in`
             System.setIn(java.io.ByteArrayInputStream(ByteArray(0)))
 
-            // CRITICAL: Set TCCL to ResidentMavenExecutor's classloader before invoke()
-            // This ensures thread pool threads can load Maven/Plexus classes from the shaded JAR
+            // CRITICAL: Set TCCL to plexus.core ClassRealm before invoke()
+            // This ensures thread pool threads can load Maven/Plexus/Sisu classes from the system classloader
             val originalTccl = Thread.currentThread().contextClassLoader
-            Thread.currentThread().contextClassLoader = ResidentMavenExecutor::class.java.classLoader
+            Thread.currentThread().contextClassLoader = classWorld.getClassRealm("plexus.core")
 
             val exitCode = try {
                 log.info("ResidentMavenInvoker starting execution...")
