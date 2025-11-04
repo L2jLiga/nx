@@ -49,6 +49,65 @@ class ResidentMavenExecutor(
     }
 
     /**
+     * Ensure Maven's lib directory has a compatible plexus-container-default JAR.
+     * If Maven is missing the required version, try to copy it from the batch-runner's dependencies.
+     */
+    private fun ensureMavenHasPlexusContainer() {
+        try {
+            val mavenHome = cachedMavenHome ?: findMavenHome() ?: return
+            val libDir = File(mavenHome, "lib")
+
+            if (!libDir.isDirectory) {
+                log.debug("Maven lib directory not found: ${libDir.absolutePath}")
+                return
+            }
+
+            // Check if Maven already has a recent plexus-container
+            val existingContainer = libDir.listFiles { file ->
+                file.name.startsWith("plexus-container") && file.name.endsWith(".jar")
+            }?.firstOrNull()
+
+            if (existingContainer != null) {
+                log.debug("Maven already has plexus-container: ${existingContainer.name}")
+                return
+            }
+
+            // Try to find plexus-container-default 2.1.1 in Maven Central cache
+            val userHome = System.getProperty("user.home")
+            val m2Repo = File(userHome, ".m2/repository/org/codehaus/plexus/plexus-container-default/2.1.1/plexus-container-default-2.1.1.jar")
+
+            if (m2Repo.exists()) {
+                log.info("Adding plexus-container-default 2.1.1 to Maven lib directory: ${libDir.absolutePath}")
+                // Create a symlink to avoid duplicating the JAR
+                try {
+                    val targetJar = File(libDir, "plexus-container-default-2.1.1.jar")
+                    if (!targetJar.exists()) {
+                        java.nio.file.Files.createSymbolicLink(
+                            targetJar.toPath(),
+                            m2Repo.toPath()
+                        )
+                        log.info("✅ Created symlink to plexus-container-default 2.1.1")
+                    }
+                } catch (e: Exception) {
+                    log.debug("Could not create symlink, attempting copy instead: ${e.message}")
+                    // Fallback to copy if symlink fails
+                    try {
+                        m2Repo.copyTo(File(libDir, "plexus-container-default-2.1.1.jar"), overwrite = false)
+                        log.info("✅ Copied plexus-container-default 2.1.1 to Maven lib")
+                    } catch (e2: Exception) {
+                        log.warn("Could not add plexus-container to Maven lib: ${e2.message}")
+                    }
+                }
+            } else {
+                log.debug("plexus-container-default 2.1.1 not found in Maven repository")
+            }
+        } catch (e: Exception) {
+            log.debug("Error ensuring Maven has plexus-container: ${e.message}")
+            // Don't fail initialization if this step fails
+        }
+    }
+
+    /**
      * Try to use Maven 4.x (required for ResidentMavenInvoker).
      * Prefers newer versions (4.0.0 final, then rc-4, then rc-3, etc).
      * Maven 4.0.0-rc-4 and earlier have issues with plexus-container compatibility.
@@ -381,6 +440,18 @@ class ResidentMavenExecutor(
     private fun initializeMaven() {
         try {
             log.info("Initializing Maven with ResidentMavenInvoker...")
+
+            // Find and cache Maven home first
+            val mavenHome = findMavenHome()
+            if (mavenHome != null) {
+                cachedMavenHome = mavenHome
+                log.info("Maven home: ${mavenHome.absolutePath}")
+
+                // Ensure Maven installation has compatible plexus-container version
+                ensureMavenHasPlexusContainer()
+            } else {
+                log.warn("Could not find Maven home")
+            }
 
             // Create ClassWorld for loading Maven classes
             // Use the ClassLoader of this class, which has access to all shaded dependencies in the uber JAR
