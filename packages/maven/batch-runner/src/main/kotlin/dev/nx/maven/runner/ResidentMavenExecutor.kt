@@ -528,13 +528,19 @@ class ResidentMavenExecutor(
             log.debug("Executing Maven with goals: $goals, arguments: $arguments from directory: $workingDir")
 
             // Create a message builder factory for formatting output
+            val builderFactoryTime = System.currentTimeMillis()
             val messageBuilderFactory: MessageBuilderFactory = JLineMessageBuilderFactory()
+            val builderFactoryDuration = System.currentTimeMillis() - builderFactoryTime
+            if (builderFactoryDuration > 10) {
+              log.debug("JLineMessageBuilderFactory creation took ${builderFactoryDuration}ms")
+            }
 
             // Use cached Maven home (found during initialization)
             val mavenHome = cachedMavenHome
 
             // Create ParserRequest from our arguments
             // Following the official Maven test pattern (MavenInvokerTestSupport.java)
+            val parserReqTime = System.currentTimeMillis()
             val parserRequestBuilder = ParserRequest.mvn(allArguments.toList(), messageBuilderFactory)
                 .cwd(workingDir.toPath())
                 .userHome(File(System.getProperty("user.home")).toPath())
@@ -548,10 +554,20 @@ class ResidentMavenExecutor(
             }
 
             val parserRequest = parserRequestBuilder.build()
+            val parserReqDuration = System.currentTimeMillis() - parserReqTime
+            if (parserReqDuration > 10) {
+              log.debug("ParserRequest building took ${parserReqDuration}ms")
+            }
 
             // Parse the request to get InvokerRequest
             val invokerRequest = try {
-                parser.parseInvocation(parserRequest)
+                val parseTime = System.currentTimeMillis()
+                val result = parser.parseInvocation(parserRequest)
+                val parseDuration = System.currentTimeMillis() - parseTime
+                if (parseDuration > 10) {
+                  log.debug("parser.parseInvocation() took ${parseDuration}ms")
+                }
+                result
             } catch (e: Exception) {
                 log.error("Failed to parse Maven invocation: ${e.message}", e)
                 outputStream.write("ERROR: Failed to parse Maven command: ${e.message}\n".toByteArray())
@@ -610,13 +626,21 @@ class ResidentMavenExecutor(
 
             // ResidentMavenInvoker may try to read from stdin - provide empty input to prevent hanging
             val originalIn = System.`in`
+            val stdinSetTime = System.currentTimeMillis()
             System.setIn(java.io.ByteArrayInputStream(ByteArray(0)))
+            val stdinSetDuration = System.currentTimeMillis() - stdinSetTime
+            if (stdinSetDuration > 10) {
+              log.debug("System.setIn() took ${stdinSetDuration}ms")
+            }
 
+            val invokeStartTime = System.currentTimeMillis()
             val exitCode = try {
                 log.info("ResidentMavenInvoker starting execution...")
                 log.info("Thread: ${Thread.currentThread().name}")
+                val invokeTime = System.currentTimeMillis()
                 val result = invoker.invoke(invokerRequest)
-                log.info("✅ invoker.invoke() completed, returned: $result")
+                val invokeActualTime = System.currentTimeMillis() - invokeTime
+                log.info("✅ invoker.invoke() completed in ${invokeActualTime}ms, returned: $result")
                 result
             } catch (e: NoSuchMethodError) {
                 // Maven version mismatch - plexus-container method not available
@@ -638,7 +662,17 @@ class ResidentMavenExecutor(
                 e.printStackTrace(PrintStream(outputStream, true))
                 1  // Return failure exit code
             } finally {
+                val stdinRestoreTime = System.currentTimeMillis()
                 System.setIn(originalIn)
+                val stdinRestoreDuration = System.currentTimeMillis() - stdinRestoreTime
+                if (stdinRestoreDuration > 10) {
+                  log.debug("System.setIn(original) took ${stdinRestoreDuration}ms")
+                }
+            }
+
+            val invokeBlockDuration = System.currentTimeMillis() - invokeStartTime
+            if (invokeBlockDuration > 100) {
+              log.debug("Total invoker.invoke() block time: ${invokeBlockDuration}ms (includes stdin setup/restore)")
             }
 
             log.info("invoker.invoke() returned with exit code: $exitCode")
