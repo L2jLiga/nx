@@ -42,6 +42,7 @@ class ResidentMavenExecutor(
     private lateinit var parser: MavenParser
     private lateinit var classWorld: ClassWorld
     private var initialized = false
+    private var invocationCount = 0
 
     // Cached Maven home - found once during initialization and reused
     private var cachedMavenHome: File? = null
@@ -510,7 +511,9 @@ class ResidentMavenExecutor(
             throw RuntimeException("Maven not properly initialized")
         }
 
-        log.info("execute() called with goals: $goals, arguments: $arguments")
+        invocationCount++
+        log.info("execute() called - Invocation #$invocationCount with goals: $goals, arguments: $arguments")
+        log.info("Reusing same ResidentMavenInvoker instance (context caching enabled)")
         val startTime = System.currentTimeMillis()
 
         // Prepare output capture streams
@@ -644,7 +647,11 @@ class ResidentMavenExecutor(
 
             if (exitCode == 0) {
                 log.info("✅ Maven execution completed successfully with exit code $exitCode in ${duration}ms")
-                log.debug("   - Used cached context (no project rescanning)")
+                if (duration < 150) {
+                    log.info("⚡ CACHE HIT: Execution was fast (< 150ms), cached projects were reused")
+                } else {
+                    log.info("🔄 First execution or cache miss: Execution took ${duration}ms (includes POM parsing/resolution)")
+                }
             } else {
                 log.warn("❌ Maven execution failed with exit code $exitCode in ${duration}ms")
             }
