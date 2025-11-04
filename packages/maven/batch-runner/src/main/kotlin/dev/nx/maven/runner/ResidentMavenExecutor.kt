@@ -497,6 +497,11 @@ class ResidentMavenExecutor(
             val originalIn = System.`in`
             System.setIn(java.io.ByteArrayInputStream(ByteArray(0)))
 
+            // CRITICAL: Set TCCL to system classloader before invoke()
+            // This ensures thread pool threads can load Maven/Plexus classes
+            val originalTccl = Thread.currentThread().contextClassLoader
+            Thread.currentThread().contextClassLoader = ClassLoader.getSystemClassLoader()
+
             val exitCode = try {
                 log.info("ResidentMavenInvoker starting execution...")
                 log.info("Thread: ${Thread.currentThread().name}")
@@ -509,8 +514,9 @@ class ResidentMavenExecutor(
                 e.printStackTrace(PrintStream(outputStream, true))
                 1  // Return failure exit code
             } finally {
-                log.info("Finally block: restoring System.in")
+                log.info("Finally block: restoring System.in and TCCL")
                 System.setIn(originalIn)
+                Thread.currentThread().contextClassLoader = originalTccl
             }
 
             log.info("invoker.invoke() returned with exit code: $exitCode")
