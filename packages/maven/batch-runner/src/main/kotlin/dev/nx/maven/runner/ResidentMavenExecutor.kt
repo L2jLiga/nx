@@ -49,15 +49,20 @@ class ResidentMavenExecutor(
     }
 
     /**
-     * Try to use Maven 4.0.0-rc-4 specifically (required for ResidentMavenInvoker).
-     * Checks common installation paths for Maven 4.
+     * Try to use Maven 4.x (required for ResidentMavenInvoker).
+     * Prefers newer versions (4.0.0 final, then rc-4, then rc-3, etc).
+     * Maven 4.0.0-rc-4 and earlier have issues with plexus-container compatibility.
      */
     private fun findMaven4Installation(): File? {
         val userHome = System.getProperty("user.home")
         val candidates = listOf(
+            // Prefer newer versions that have fixed plexus-container issues
+            File(userHome, ".m2/wrapper/dists/apache-maven-4.0.0"),
+            File(userHome, ".m2/wrapper/dists/apache-maven-4.0.0-bin"),
             File(userHome, ".m2/wrapper/dists/apache-maven-4.0.0-rc-4"),
             File(userHome, ".m2/wrapper/dists/apache-maven-4.0.0-rc.4"),
-            File(userHome, ".m2/wrapper/dists/apache-maven-4.0.0"),
+            File(userHome, ".m2/wrapper/dists/apache-maven-4.0.0-rc.4-bin"),
+            File(userHome, ".m2/wrapper/dists/apache-maven-4.0.0-rc-3"),
             File("/usr/local/opt/maven-4"),  // Homebrew on macOS
             File("/opt/maven-4"),  // Linux
         )
@@ -553,6 +558,20 @@ class ResidentMavenExecutor(
                 val result = invoker.invoke(invokerRequest)
                 log.info("✅ invoker.invoke() completed, returned: $result")
                 result
+            } catch (e: NoSuchMethodError) {
+                // Maven version mismatch - plexus-container method not available
+                log.error("❌ Maven version incompatibility: ${e.message}", e)
+                log.info("This typically means the detected Maven version doesn't have plexus-container.setClassPathScanning()")
+                log.info("Available Maven 4 versions on this system:")
+                val userHome = System.getProperty("user.home")
+                val wrapperDir = File(userHome, ".m2/wrapper/dists")
+                if (wrapperDir.exists()) {
+                    wrapperDir.listFiles()?.filter { it.isDirectory && it.name.startsWith("apache-maven-4") }
+                        ?.forEach { log.info("  - ${it.name}") }
+                }
+                outputStream.write("\nEXCEPTION: Maven version incompatibility - ${e.message}\n".toByteArray())
+                e.printStackTrace(PrintStream(outputStream, true))
+                1  // Return failure exit code
             } catch (e: Throwable) {
                 log.error("❌ EXCEPTION during invoker.invoke(): ${e.javaClass.simpleName}: ${e.message}", e)
                 outputStream.write("\nEXCEPTION: ${e.message}\n".toByteArray())
