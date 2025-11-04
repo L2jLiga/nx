@@ -333,8 +333,8 @@ class ResidentMavenExecutor(
             log.info("Initializing Maven with ResidentMavenInvoker...")
 
             // Create ClassWorld for loading Maven classes
-            // Use SystemClassLoader which includes all classpath libraries (Maven/Plexus classes)
-            val classWorld = ClassWorld("plexus.core", ClassLoader.getSystemClassLoader())
+            // Use the ClassLoader of this class, which has access to all shaded dependencies in the uber JAR
+            val classWorld = ClassWorld("plexus.core", ResidentMavenExecutor::class.java.classLoader)
 
             // Create a basic Lookup for the invoker
             // ResidentMavenInvoker expects a Lookup that it will use to populate the MavenContext
@@ -497,10 +497,10 @@ class ResidentMavenExecutor(
             val originalIn = System.`in`
             System.setIn(java.io.ByteArrayInputStream(ByteArray(0)))
 
-            // CRITICAL: Set TCCL to system classloader before invoke()
-            // This ensures thread pool threads can load Maven/Plexus classes
+            // CRITICAL: Set TCCL to ResidentMavenExecutor's classloader before invoke()
+            // This ensures thread pool threads can load Maven/Plexus classes from the shaded JAR
             val originalTccl = Thread.currentThread().contextClassLoader
-            Thread.currentThread().contextClassLoader = ClassLoader.getSystemClassLoader()
+            Thread.currentThread().contextClassLoader = ResidentMavenExecutor::class.java.classLoader
 
             val exitCode = try {
                 log.info("ResidentMavenInvoker starting execution...")
