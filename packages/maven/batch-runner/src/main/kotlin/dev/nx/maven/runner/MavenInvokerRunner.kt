@@ -293,6 +293,8 @@ class MavenInvokerRunner(private val workspaceRoot: File, private val options: M
       arguments.add("-X")
     }
 
+    arguments.add("-nsu")
+
     // Module selector (always pass the project)
     val task = options.taskGraph?.tasks?.get(taskId)
     val projectSelector = task?.projectRoot ?: task?.target?.project ?: mavenBatchTask.project
