@@ -647,10 +647,17 @@ class ResidentMavenExecutor(
 
             if (exitCode == 0) {
                 log.info("✅ Maven execution completed successfully with exit code $exitCode in ${duration}ms")
+                // Cache hit detection: if same project/module is executed, subsequent runs should be faster
+                // Note: Context caching in ResidentMavenInvoker may not provide significant speedup when:
+                // - Jumping between different modules (library → application)
+                // - Each module requires separate dependency resolution
+                // - Different execution phases are used
                 if (duration < 150) {
-                    log.info("⚡ CACHE HIT: Execution was fast (< 150ms), cached projects were reused")
+                    log.info("⚡ CACHE HIT: Very fast execution (${duration}ms), projects were cached & reused")
+                } else if (duration < 400 && invocationCount > 1) {
+                    log.info("📊 Good: ${duration}ms (resident context is helping, but project resolution still needed)")
                 } else {
-                    log.info("🔄 First execution or cache miss: Execution took ${duration}ms (includes POM parsing/resolution)")
+                    log.info("🔄 Full resolution: ${duration}ms (first run or different module - POM parsing/dependency resolution occurred)")
                 }
             } else {
                 log.warn("❌ Maven execution failed with exit code $exitCode in ${duration}ms")
