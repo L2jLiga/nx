@@ -57,11 +57,21 @@ object SessionCachingMavenExecutorFactory {
             executor
         } catch (e: Exception) {
             // Maven 4.x components not available, fall back to subprocess approach
-            if (e.message?.contains("ResidentMavenInvoker") == true ||
-                e.cause?.message?.contains("maven-cli") == true ||
-                e.message?.contains("ClassNotFoundException") == true ||
-                e.message?.contains("Maven") == true) {
-                log.info("⚠️  Maven 4.x ResidentMavenInvoker not available (likely Maven 3.9.x)")
+            val isMaven4Missing = e is NoSuchMethodError ||
+                    e is NoClassDefFoundError ||
+                    e.message?.contains("ResidentMavenInvoker") == true ||
+                    e.message?.contains("ClassNotFoundException") == true ||
+                    e.message?.contains("NoSuchMethodError") == true ||
+                    e.message?.contains("setClassPathScanning") == true ||
+                    e.cause?.message?.contains("maven-cli") == true ||
+                    e.cause is NoSuchMethodError ||
+                    e.cause is NoClassDefFoundError ||
+                    e.message?.contains("Maven") == true
+
+            if (isMaven4Missing) {
+                log.info("⚠️  Maven 4.x ResidentMavenInvoker not available")
+                log.info("   Error: ${e.javaClass.simpleName}: ${e.message}")
+                log.info("   Likely cause: Maven 3.9.x detected (missing plexus-container methods)")
                 log.info("   Falling back to ProcessBasedMavenExecutor for compatibility")
                 log.info("   Note: This approach is reliable but slower (~35-50ms per task)")
                 ProcessBasedMavenExecutor(workspaceRoot)

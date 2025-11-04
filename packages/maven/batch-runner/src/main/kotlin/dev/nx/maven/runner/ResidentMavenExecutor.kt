@@ -49,6 +49,44 @@ class ResidentMavenExecutor(
     }
 
     /**
+     * Try to use Maven 4.0.0-rc-4 specifically (required for ResidentMavenInvoker).
+     * Checks common installation paths for Maven 4.
+     */
+    private fun findMaven4Installation(): File? {
+        val userHome = System.getProperty("user.home")
+        val candidates = listOf(
+            File(userHome, ".m2/wrapper/dists/apache-maven-4.0.0-rc-4"),
+            File(userHome, ".m2/wrapper/dists/apache-maven-4.0.0-rc.4"),
+            File(userHome, ".m2/wrapper/dists/apache-maven-4.0.0"),
+            File("/usr/local/opt/maven-4"),  // Homebrew on macOS
+            File("/opt/maven-4"),  // Linux
+        )
+
+        for (candidate in candidates) {
+            val libDir = File(candidate, "lib")
+            if (libDir.isDirectory) {
+                // Handle wrapper directory structure (hash subdirectories)
+                val hashDirs = candidate.listFiles { file -> file.isDirectory && file.name.matches(Regex("[a-f0-9]{40}")) }
+                if (hashDirs != null && hashDirs.isNotEmpty()) {
+                    val actualMavenHome = hashDirs[0]
+                    if (File(actualMavenHome, "lib").isDirectory) {
+                        log.info("Found Maven 4.0.0-rc-4 installation at: ${actualMavenHome.absolutePath}")
+                        return actualMavenHome
+                    }
+                }
+                // Or direct installation
+                if (libDir.isDirectory) {
+                    log.info("Found Maven 4.0.0-rc-4 installation at: ${candidate.absolutePath}")
+                    return candidate
+                }
+            }
+        }
+
+        log.debug("Maven 4.0.0-rc-4 not found in standard locations")
+        return null
+    }
+
+    /**
      * Extract Maven home by running ./mvnw --version and parsing the output.
      * The Maven wrapper script prints "Maven home: /path/to/maven" which we can extract.
      */
@@ -154,6 +192,13 @@ class ResidentMavenExecutor(
      * 8. Returns null if not found
      */
     private fun findMavenHome(): File? {
+        // PRIORITY 1: Find Maven 4.0.0-rc-4 specifically (ResidentMavenInvoker requires Maven 4.x)
+        // This MUST be checked before using project's mvnw/maven-wrapper which might specify older Maven
+        val maven4 = findMaven4Installation()
+        if (maven4 != null) {
+            return maven4
+        }
+
         // Check MAVEN_HOME environment variable
         val mavenHomeEnv = System.getenv("MAVEN_HOME")
         if (mavenHomeEnv != null && mavenHomeEnv.isNotEmpty()) {
