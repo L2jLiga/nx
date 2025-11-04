@@ -8,11 +8,6 @@ import dev.nx.maven.utils.removeTasksFromTaskGraph
 import org.slf4j.LoggerFactory
 import java.io.ByteArrayOutputStream
 import java.io.File
-import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.ExecutorService
-import java.util.concurrent.Executors
-import java.util.concurrent.TimeUnit
 
 /**
  * Batch runner that executes Maven tasks using Maven 4.x with session and project caching.
@@ -30,10 +25,6 @@ import java.util.concurrent.TimeUnit
 class MavenInvokerRunner(private val workspaceRoot: File, private val options: MavenBatchOptions) {
   private val log = LoggerFactory.getLogger(MavenInvokerRunner::class.java)
 
-  @Volatile
-  private var shutdownRequested = false
-  private var executor: ExecutorService? = null
-
   // Maven executor - automatically selects best available strategy:
   // - Maven 4.x: SessionCachingMavenExecutor with project caching
   // - Maven 3.9.x: ProcessBasedMavenExecutor (fallback via subprocess)
@@ -42,14 +33,8 @@ class MavenInvokerRunner(private val workspaceRoot: File, private val options: M
     localRepositoryPath = File(System.getProperty("user.home"), ".m2/repository")
   )
 
-  fun requestShutdown() {
-    log.info("⚠️  Shutdown requested, stopping new task submissions...")
-    shutdownRequested = true
-    executor?.shutdownNow()
-  }
-
   fun runBatch(): Map<String, TaskResult> {
-    val results = ConcurrentHashMap<String, TaskResult>()
+    val results = mutableMapOf<String, TaskResult>()
 
     log.info("Received ${options.tasks.size} tasks")
 
@@ -65,27 +50,20 @@ class MavenInvokerRunner(private val workspaceRoot: File, private val options: M
     var remainingGraph: TaskGraph = initialGraph
     log.info("Initial roots: ${remainingGraph.roots.joinToString(", ")}")
 
-    // Create thread pool for parallel root execution
-    val numThreads = 4
-    executor = Executors.newFixedThreadPool(numThreads)
-
     try {
-
       // While loop: execute tasks as long as there are roots
-      while (remainingGraph.roots.isNotEmpty() && !shutdownRequested) {
+      while (remainingGraph.roots.isNotEmpty()) {
         log.info("Executing batch of roots: ${remainingGraph.roots.joinToString(", ")}")
 
-        // Execute all root tasks in parallel
+        // Execute all root tasks sequentially (no thread pool)
         val batchStartTime = System.currentTimeMillis()
-        val batchResults = executeRootTasksInParallel(
-          remainingGraph.roots,
-          results
-        )
+        for (taskId in remainingGraph.roots) {
+          executeSingleTask(taskId, results)
+        }
         val batchDuration = System.currentTimeMillis() - batchStartTime
         log.info("Batch execution completed in ${batchDuration}ms")
 
         // Separate successful and failed tasks from the current batch roots
-        // Note: We check the 'results' map, not batchResults, because that's where task completions are tracked
         val graphUpdateStartTime = System.currentTimeMillis()
         val currentBatchRoots = remainingGraph.roots.toSet()
         val successfulTaskIds = currentBatchRoots.filter { taskId ->
@@ -142,55 +120,9 @@ class MavenInvokerRunner(private val workspaceRoot: File, private val options: M
     return results.toMap()
   }
 
-  private fun executeRootTasksInParallel(
-    rootTaskIds: List<String>,
-    results: ConcurrentHashMap<String, TaskResult>
-  ): List<TaskResult> {
-    val batchResults = mutableListOf<TaskResult>()
-    val latch = CountDownLatch(rootTaskIds.size)
-
-    for (taskId in rootTaskIds) {
-      if (shutdownRequested) break
-
-      executor!!.submit {
-        try {
-          val result = executeSingleTask(taskId, results)
-          synchronized(batchResults) {
-            batchResults.add(result)
-          }
-        } catch (e: Exception) {
-          log.error("Unexpected error executing task $taskId", e)
-          // Still add error result so we don't hang
-          synchronized(batchResults) {
-            batchResults.add(TaskResult(
-              taskId = taskId,
-              success = false,
-              terminalOutput = "Unexpected error: ${e.message}",
-              startTime = 0,
-              endTime = 0
-            ))
-          }
-        } finally {
-          latch.countDown()
-        }
-      }
-    }
-
-    // Wait for all root tasks to complete with a timeout to prevent hanging
-    val completed = latch.await(10, TimeUnit.MINUTES)
-    if (!completed) {
-      log.error("Timeout waiting for batch of ${rootTaskIds.size} tasks to complete!")
-      log.error("Tasks still waiting: ${rootTaskIds.filter { taskId ->
-        !results.containsKey(taskId)
-      }.joinToString(", ")}")
-      // Return whatever completed tasks we have
-    }
-    return batchResults
-  }
-
   private fun executeSingleTask(
     taskId: String,
-    results: ConcurrentHashMap<String, TaskResult>
+    results: MutableMap<String, TaskResult>
   ): TaskResult {
     val startTime = System.currentTimeMillis()
 
@@ -282,39 +214,13 @@ class MavenInvokerRunner(private val workspaceRoot: File, private val options: M
   }
 
   private fun gracefulShutdown() {
-    // Shutdown main task execution thread pool executor
-    val exec = executor
-    if (exec != null && !exec.isShutdown) {
-      log.info("Initiating graceful shutdown of thread pool executor...")
-      exec.shutdown()
-
-      // Wait up to 30 seconds for tasks to complete
-      try {
-        if (!exec.awaitTermination(30, TimeUnit.SECONDS)) {
-          log.warn("Executor did not terminate within 30 seconds, force shutting down...")
-          exec.shutdownNow()
-
-          // Wait another 5 seconds for forced shutdown
-          if (!exec.awaitTermination(5, TimeUnit.SECONDS)) {
-            log.error("Executor still not terminated after force shutdown")
-          }
-        } else {
-          log.info("✅ Thread pool executor gracefully shut down")
-        }
-      } catch (e: InterruptedException) {
-        log.warn("Interrupted while waiting for executor shutdown, forcing shutdown...")
-        exec.shutdownNow()
-        Thread.currentThread().interrupt()
-      }
-    }
-
     // Shutdown Maven executor (cleans up resources based on executor type)
     try {
       log.info("Shutting down Maven executor...")
       mavenExecutor.shutdown()
       log.info("✅ Maven executor shut down")
     } catch (e: Exception) {
-      log.error("Failed to shutdown Maven executor: ${e.message}", e)
+      log.error("Failed to shutdown Maven executor: ${e.message}")
     }
   }
 
