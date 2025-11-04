@@ -421,7 +421,11 @@ class ResidentMavenExecutor(
 
             // Set TCCL to plexus.core ClassRealm globally for the entire JVM
             // This ensures all threads (including thread pool threads) can load Maven/Plexus classes
-            Thread.currentThread().contextClassLoader = classWorld.getClassRealm("plexus.core")
+            val plexusCoreRealm = classWorld.getClassRealm("plexus.core")
+            log.info("DEBUG: plexus.core ClassRealm = $plexusCoreRealm")
+            log.info("DEBUG: Setting TCCL to plexus.core ClassRealm")
+            Thread.currentThread().contextClassLoader = plexusCoreRealm
+            log.info("DEBUG: TCCL is now: ${Thread.currentThread().contextClassLoader}")
 
             initialized = true
             log.info("✅ Maven initialized with ResidentMavenInvoker (context caching enabled)")
@@ -440,27 +444,42 @@ class ResidentMavenExecutor(
      */
     private fun addMavenLibJarsToClassRealm() {
         try {
-            val mavenLibDir = cachedMavenHome?.let { File(it, "lib") }
+            val mavenHome = cachedMavenHome
+            log.info("DEBUG: cachedMavenHome = $mavenHome")
+
+            val mavenLibDir = mavenHome?.let { File(it, "lib") }
+            log.info("DEBUG: mavenLibDir = ${mavenLibDir?.absolutePath}")
+            log.info("DEBUG: mavenLibDir exists? ${mavenLibDir?.exists()}")
+            log.info("DEBUG: mavenLibDir isDirectory? ${mavenLibDir?.isDirectory}")
+
             if (mavenLibDir?.isDirectory != true) {
-                log.warn("Maven lib directory not found: ${mavenLibDir?.absolutePath}")
+                log.warn("Maven lib directory not found or not a directory: ${mavenLibDir?.absolutePath}")
                 return
             }
 
-            val coreRealm = classWorld.getClassRealm("plexus.core")
             val jarFiles = mavenLibDir.listFiles { file -> file.name.endsWith(".jar") } ?: emptyArray()
+            log.info("DEBUG: Found ${jarFiles.size} JAR files in Maven lib directory")
+            jarFiles.forEach { jar ->
+                log.info("DEBUG:   - ${jar.name}")
+            }
 
+            val coreRealm = classWorld.getClassRealm("plexus.core")
+            log.info("DEBUG: Got coreRealm: $coreRealm")
+
+            var successCount = 0
             jarFiles.forEach { jarFile ->
                 try {
                     coreRealm.addURL(jarFile.toURI().toURL())
-                    log.info("Added to ClassRealm: ${jarFile.absolutePath}")
+                    log.info("✓ Added to ClassRealm: ${jarFile.name}")
+                    successCount++
                 } catch (e: Exception) {
-                    log.warn("Failed to add JAR to ClassRealm: ${jarFile.name} - ${e.message}")
+                    log.warn("✗ Failed to add JAR to ClassRealm: ${jarFile.name} - ${e.javaClass.simpleName}: ${e.message}")
                 }
             }
 
-            log.info("Added ${jarFiles.size} Maven lib JARs to plexus.core ClassRealm")
+            log.info("Successfully added $successCount/${jarFiles.size} Maven lib JARs to plexus.core ClassRealm")
         } catch (e: Exception) {
-            log.warn("Could not add Maven lib JARs to ClassRealm: ${e.message}")
+            log.error("ERROR in addMavenLibJarsToClassRealm: ${e.javaClass.simpleName}: ${e.message}", e)
         }
     }
 
