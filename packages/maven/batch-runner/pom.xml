@@ -80,6 +80,15 @@
             <scope>compile</scope>
         </dependency>
 
+        <!-- Guice - MUST be shaded (not in Maven 4.x lib, but needed by maven-cli) -->
+        <dependency>
+            <groupId>com.google.inject</groupId>
+            <artifactId>guice</artifactId>
+            <version>5.1.0</version>
+            <classifier>classes</classifier>
+            <scope>compile</scope>
+        </dependency>
+
         <!-- Logging - MUST be shaded (runtime doesn't guarantee it) -->
         <dependency>
             <groupId>org.slf4j</groupId>
