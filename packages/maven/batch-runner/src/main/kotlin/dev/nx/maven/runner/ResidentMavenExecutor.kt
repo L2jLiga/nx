@@ -12,6 +12,10 @@ import org.slf4j.LoggerFactory
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.PrintStream
+import java.util.zip.ZipFile
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
+import java.io.BufferedOutputStream
 
 /**
  * Maven Executor using ResidentMavenInvoker for efficient batch execution.
@@ -49,8 +53,9 @@ class ResidentMavenExecutor(
     }
 
     /**
-     * Ensure Maven's lib directory has a compatible plexus-container-default JAR.
-     * If Maven is missing the required version, try to copy it from the batch-runner's dependencies.
+     * Patch Maven's org.eclipse.sisu.plexus JAR by replacing old ContainerConfiguration classes.
+     * The sisu.plexus JAR contains outdated plexus-container classes that lack setClassPathScanning().
+     * We extract the new classes from plexus-container-default 2.1.1 and insert them into sisu.plexus.
      */
     private fun ensureMavenHasPlexusContainer() {
         try {
@@ -62,48 +67,85 @@ class ResidentMavenExecutor(
                 return
             }
 
-            // Check if Maven already has a recent plexus-container
-            val existingContainer = libDir.listFiles { file ->
-                file.name.startsWith("plexus-container") && file.name.endsWith(".jar")
+            // Find sisu.plexus JAR
+            val sisuPlexus = libDir.listFiles { file ->
+                file.name.startsWith("org.eclipse.sisu.plexus") && file.name.endsWith(".jar")
             }?.firstOrNull()
 
-            if (existingContainer != null) {
-                log.debug("Maven already has plexus-container: ${existingContainer.name}")
+            if (sisuPlexus == null) {
+                log.debug("org.eclipse.sisu.plexus not found in Maven lib - may not need patching")
                 return
             }
 
-            // Try to find plexus-container-default 2.1.1 in Maven Central cache
+            // Find plexus-container-default 2.1.1
             val userHome = System.getProperty("user.home")
-            val m2Repo = File(userHome, ".m2/repository/org/codehaus/plexus/plexus-container-default/2.1.1/plexus-container-default-2.1.1.jar")
+            val newPlexusContainer = File(userHome, ".m2/repository/org/codehaus/plexus/plexus-container-default/2.1.1/plexus-container-default-2.1.1.jar")
 
-            if (m2Repo.exists()) {
-                log.info("Adding plexus-container-default 2.1.1 to Maven lib directory: ${libDir.absolutePath}")
-                // Create a symlink to avoid duplicating the JAR
-                try {
-                    val targetJar = File(libDir, "plexus-container-default-2.1.1.jar")
-                    if (!targetJar.exists()) {
-                        java.nio.file.Files.createSymbolicLink(
-                            targetJar.toPath(),
-                            m2Repo.toPath()
-                        )
-                        log.info("✅ Created symlink to plexus-container-default 2.1.1")
-                    }
-                } catch (e: Exception) {
-                    log.debug("Could not create symlink, attempting copy instead: ${e.message}")
-                    // Fallback to copy if symlink fails
-                    try {
-                        m2Repo.copyTo(File(libDir, "plexus-container-default-2.1.1.jar"), overwrite = false)
-                        log.info("✅ Copied plexus-container-default 2.1.1 to Maven lib")
-                    } catch (e2: Exception) {
-                        log.warn("Could not add plexus-container to Maven lib: ${e2.message}")
+            if (!newPlexusContainer.exists()) {
+                log.debug("plexus-container-default 2.1.1 not found in Maven repository")
+                return
+            }
+
+            log.info("Patching ${sisuPlexus.name} with ContainerConfiguration from plexus-container-default 2.1.1")
+            patchSisuPlexusJar(sisuPlexus, newPlexusContainer)
+
+        } catch (e: Exception) {
+            log.debug("Error patching sisu.plexus: ${e.message}")
+            // Don't fail initialization if this step fails
+        }
+    }
+
+    /**
+     * Patch sisu.plexus JAR by removing old ContainerConfiguration classes
+     * This forces Maven to load the new classes from plexus-container-default 2.1.1
+     */
+    private fun patchSisuPlexusJar(sisuJar: File, newPlexusJar: File) {
+        try {
+            log.info("Patching ${sisuJar.name} to remove old plexus-container classes...")
+
+            val classesToRemove = setOf(
+                "org/codehaus/plexus/ContainerConfiguration.class",
+                "org/codehaus/plexus/DefaultContainerConfiguration.class"
+            )
+
+            // Create backup
+            val backupFile = File(sisuJar.parent, sisuJar.name + ".bak")
+            if (!backupFile.exists()) {
+                sisuJar.copyTo(backupFile)
+                log.info("Created backup: ${backupFile.name}")
+            }
+
+            // Read all entries from sisu.plexus except the ones we want to remove
+            val tempFile = File(sisuJar.parent, sisuJar.name + ".tmp")
+
+            ZipFile(sisuJar).use { zipInput ->
+                ZipOutputStream(BufferedOutputStream(tempFile.outputStream())).use { zipOutput ->
+                    zipInput.entries().asSequence().forEach { entry ->
+                        if (entry.name !in classesToRemove) {
+                            // Copy this entry to the new JAR
+                            zipOutput.putNextEntry(ZipEntry(entry.name))
+                            if (!entry.isDirectory) {
+                                zipInput.getInputStream(entry).use { input ->
+                                    input.copyTo(zipOutput)
+                                }
+                            }
+                            zipOutput.closeEntry()
+                        } else {
+                            log.info("Removed old class: ${entry.name}")
+                        }
                     }
                 }
-            } else {
-                log.debug("plexus-container-default 2.1.1 not found in Maven repository")
             }
+
+            // Replace original JAR with patched version
+            sisuJar.delete()
+            tempFile.renameTo(sisuJar)
+
+            log.info("✅ Successfully patched ${sisuJar.name}")
+
         } catch (e: Exception) {
-            log.debug("Error ensuring Maven has plexus-container: ${e.message}")
-            // Don't fail initialization if this step fails
+            log.warn("Could not patch sisu.plexus JAR: ${e.message}")
+            // This is non-fatal - will fall back gracefully
         }
     }
 
